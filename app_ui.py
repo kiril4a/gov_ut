@@ -33,6 +33,9 @@ class App(ctk.CTk):
         self.filter_articles = []         # Default: empty list means "all articles" (no filter)
         self.row_widgets = {}
         
+        # New Cache for Row Widgets
+        self.rows_cache = []
+        
         # Sync state
         self.sync_mode = False 
         self.worksheet = None
@@ -323,22 +326,65 @@ class App(ctk.CTk):
             threading.Thread(target=self.update_google_row, args=(row,), daemon=True).start()
 
     def render_staff(self):
-        # Clear existing widgets in scrollable frame
-        for widget in self.staff_scroll.winfo_children():
-            widget.destroy()
-        self.row_widgets.clear()
-        
-        # Use filtered_data for rendering
-        current_data = self.filtered_data
+        """Оптимизированная отрисовка через переиспользование виджетов"""
 
-        # Headers for the list
+        # Clear existing headers if any (usually we would want to keep them static too, but for now we clear or recreate)
+        # To be fully efficient, headers should be created ONCE in __init__ and never destroyed.
+        # But let's stick to cleaning up scrollable frame ONLY if we haven't initialized headers yet.
+        
+        # NOTE: In this approach, we assume the scrollable frame is ONLY used for rows. 
+        # If headers are INSIDE the scrollable frame, we need to handle them.
+        # Let's put headers once.
+        
+        if not hasattr(self, 'headers_created'):
+            self._create_headers()
+            self.headers_created = True
+
+        # 1. Determine data range for current page
+        start = self.current_page * self.page_size
+        end = start + self.page_size
+        page_items = self.filtered_data[start:end]
+        
+        # Update page label
+        total_items = len(self.filtered_data)
+        total_pages = (total_items + self.page_size - 1) // self.page_size
+        if total_pages == 0: total_pages = 1
+        
+        self.page_label.configure(text=f"Страница {self.current_page + 1} из {total_pages}")
+        self.prev_btn.configure(state="normal" if self.current_page > 0 else "disabled")
+        self.next_btn.configure(state="normal" if self.current_page < total_pages - 1 else "disabled")
+
+        # 2. Iterate through page size
+        self.row_widgets.clear() # Clear logic mapping, but keep cache
+        
+        for i in range(self.page_size):
+            # Get or create row widget from cache
+            row_widgets = self._get_or_create_row_widget(i)
+            
+            if i < len(page_items):
+                # We have data for this row
+                item_data = page_items[i]
+                real_idx = start + i 
+                
+                self._update_row_widget(row_widgets, item_data, real_idx)
+                row_widgets['frame'].pack(fill="x", pady=4, padx=5)
+                
+                # Update row_widgets mapping for logic access (e.g. from popup)
+                self.row_widgets[real_idx] = {
+                    "articles_btn": row_widgets['btn_articles'],
+                    "sum_label": row_widgets['lbl_sum'],
+                    "status_btn": row_widgets['btn_status']
+                }
+            else:
+                # No data (end of page), hide widget
+                row_widgets['frame'].pack_forget()
+
+    def _create_headers(self):
         headers_frame = ctk.CTkFrame(self.staff_scroll, fg_color="transparent")
         headers_frame.pack(fill="x", pady=(0, 5), padx=5)
         
         headers = ["№", "Name", "Static ID", "Rank", "Articles", "Payment", "Status"]
         
-        # Configure Grid Layout for Headers using uniform to enforce strict proportional width
-        # Weights: No(1), Name(4), Static(2), Rank(2), Articles(4), Payment(2), Status(1)
         headers_frame.grid_columnconfigure(0, weight=1, uniform="group1") 
         headers_frame.grid_columnconfigure(1, weight=4, uniform="group1") 
         headers_frame.grid_columnconfigure(2, weight=2, uniform="group1") 
@@ -351,23 +397,130 @@ class App(ctk.CTk):
             lbl = ctk.CTkLabel(headers_frame, text=h, font=ctk.CTkFont(size=12, weight="bold"), text_color="gray", anchor="w")
             lbl.grid(row=0, column=i, sticky="ew", padx=5)
 
-        # Calculate slice
-        total_pages = (len(current_data) + self.page_size - 1) // self.page_size
-        if total_pages == 0: total_pages = 1
+    def _get_or_create_row_widget(self, index):
+        """Returns a dict of widget references for a row. Creates if not in cache."""
+        if index < len(self.rows_cache):
+            return self.rows_cache[index]
+
+        # Create new row frame
+        card = ctk.CTkFrame(self.staff_scroll, corner_radius=10, fg_color=("gray85", "gray17")) 
         
-        if self.current_page >= total_pages: self.current_page = total_pages - 1
-        if self.current_page < 0: self.current_page = 0
+        # Grid layout matching headers
+        card.grid_columnconfigure(0, weight=1, uniform="group1") # No
+        card.grid_columnconfigure(1, weight=4, uniform="group1") # Name
+        card.grid_columnconfigure(2, weight=2, uniform="group1") # Static
+        card.grid_columnconfigure(3, weight=2, uniform="group1") # Rank
+        card.grid_columnconfigure(4, weight=4, uniform="group1") # Articles
+        card.grid_columnconfigure(5, weight=2, uniform="group1") # Payment
+        card.grid_columnconfigure(6, weight=1, uniform="group1") # Status
 
-        start = self.current_page * self.page_size
-        end = min(start + self.page_size, len(current_data))
+        # 1. Number
+        lbl_num = ctk.CTkLabel(card, text="", text_color="gray", anchor="w")
+        lbl_num.grid(row=0, column=0, pady=10, padx=5, sticky="ew")
 
-        # Update controls
-        self.page_label.configure(text=f"Страница {self.current_page + 1} из {total_pages}")
-        self.prev_btn.configure(state="normal" if self.current_page > 0 else "disabled")
-        self.next_btn.configure(state="normal" if self.current_page < total_pages - 1 else "disabled")
+        # 2. Name
+        lbl_name = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=14, weight="bold"), anchor="w")
+        lbl_name.grid(row=0, column=1, pady=10, padx=5, sticky="ew")
+        
+        # 3. Static ID
+        lbl_static = ctk.CTkLabel(card, text="", text_color="gray", anchor="w")
+        lbl_static.grid(row=0, column=2, pady=10, padx=5, sticky="ew")
 
-        for idx in range(start, end):
-            self.create_staff_card(idx, current_data[idx])
+        # 4. Rank
+        lbl_rank = ctk.CTkLabel(card, text="", anchor="w")
+        lbl_rank.grid(row=0, column=3, pady=10, padx=5, sticky="ew")
+
+        # 5. Articles (Button)
+        btn_articles = ctk.CTkButton(card, text="", 
+                                     fg_color="transparent", border_width=1, 
+                                     text_color=("gray10", "gray90"),
+                                     anchor="w",
+                                     height=28)
+        btn_articles.grid(row=0, column=4, pady=5, padx=5, sticky="ew")
+
+        # 6. Payment
+        lbl_sum = ctk.CTkLabel(card, text="", anchor="w")
+        lbl_sum.grid(row=0, column=5, pady=10, padx=5, sticky="ew")
+
+        # 7. Status (Button inside frame to align)
+        status_frame = ctk.CTkFrame(card, fg_color="transparent")
+        status_frame.grid(row=0, column=6, padx=5, sticky="w")
+        
+        btn_status = ctk.CTkButton(
+            status_frame, text="", width=40, height=32,
+            border_width=2,
+            border_color="gray"
+        )
+        btn_status.pack(anchor="w")
+
+        widgets = {
+            'frame': card,
+            'lbl_num': lbl_num,
+            'lbl_name': lbl_name,
+            'lbl_static': lbl_static,
+            'lbl_rank': lbl_rank,
+            'btn_articles': btn_articles,
+            'lbl_sum': lbl_sum,
+            'btn_status': btn_status
+        }
+        
+        self.rows_cache.append(widgets)
+        return widgets
+
+    def _update_row_widget(self, widgets, row, real_idx):
+        """Populates existing widgets with data."""
+        
+        # Index display (real_idx + 1)
+        widgets['lbl_num'].configure(text=str(real_idx + 1))
+        
+        # Name
+        widgets['lbl_name'].configure(text=str(row['name']))
+        # Re-bind click events (overwrite previous bindings)
+        widgets['lbl_name'].bind('<Button-1>', lambda e, v=row['name']: self.copy_to_clipboard(v))
+        
+        # Static
+        statik_val = str(row['statik'])
+        widgets['lbl_static'].configure(text=statik_val)
+        widgets['lbl_static'].bind('<Button-1>', lambda e, v=statik_val: self.copy_to_clipboard(v))
+
+        # Rank
+        widgets['lbl_rank'].configure(text=str(row['rank']))
+
+        # Articles
+        articles_display = ", ".join(row['articles']) if row['articles'] else "Выбрать..."
+        if len(articles_display) > 25: 
+             articles_display = articles_display[:22] + "..."
+        
+        widgets['btn_articles'].configure(
+            text=articles_display,
+            command=lambda: self.open_articles_dropdown(real_idx)
+        )
+
+        # Payment
+        widgets['lbl_sum'].configure(text=f"{row['sum']} RUB")
+
+        # Status
+        processed_state = int(row.get('processed', 0))
+        
+        status_color = "red"
+        status_text = "✗"
+        hover_color = "darkred"
+
+        if processed_state == 2:
+            status_color = "green"
+            status_text = "✔"
+            hover_color = "darkgreen"
+        elif processed_state == 1:
+            status_color = "orange"
+            status_text = "?"
+            hover_color = "darkorange"
+        
+        widgets['btn_status'].configure(
+            text=status_text,
+            fg_color=status_color,
+            hover_color=hover_color,
+            command=lambda: self.toggle_processed(real_idx)
+        )
 
     def prev_page(self):
         if self.current_page > 0:
@@ -382,92 +535,6 @@ class App(ctk.CTk):
         if self.current_page < total_pages - 1:
             self.current_page += 1
             self.render_staff()
-
-    def create_staff_card(self, idx, row):
-        card = ctk.CTkFrame(self.staff_scroll, corner_radius=10, fg_color=("gray85", "gray17")) 
-        card.pack(fill="x", pady=4, padx=5)
-
-        # Grid layout for the card content with MATCHING weights and uniform group
-        card.grid_columnconfigure(0, weight=1, uniform="group1") # No
-        card.grid_columnconfigure(1, weight=4, uniform="group1") # Name
-        card.grid_columnconfigure(2, weight=2, uniform="group1") # Static
-        card.grid_columnconfigure(3, weight=2, uniform="group1") # Rank
-        card.grid_columnconfigure(4, weight=4, uniform="group1") # Articles
-        card.grid_columnconfigure(5, weight=2, uniform="group1") # Payment
-        card.grid_columnconfigure(6, weight=1, uniform="group1") # Status
-
-        # Number
-        num_label = ctk.CTkLabel(card, text=str(idx + 1), text_color="gray", anchor="w")
-        num_label.grid(row=0, column=0, pady=10, padx=5, sticky="ew")
-
-        # Name
-        name_label = ctk.CTkLabel(card, text=str(row['name']), font=ctk.CTkFont(size=14, weight="bold"), anchor="w")
-        name_label.grid(row=0, column=1, pady=10, padx=5, sticky="ew")
-        name_label.bind('<Button-1>', lambda e, v=row['name']: self.copy_to_clipboard(v))
-        
-        # Static ID
-        statik_val = str(row['statik'])
-        statik_label = ctk.CTkLabel(card, text=statik_val, text_color="gray", anchor="w")
-        statik_label.grid(row=0, column=2, pady=10, padx=5, sticky="ew")
-        statik_label.bind('<Button-1>', lambda e, v=statik_val: self.copy_to_clipboard(v))
-
-        # Rank
-        rank_label = ctk.CTkLabel(card, text=str(row['rank']), anchor="w")
-        rank_label.grid(row=0, column=3, pady=10, padx=5, sticky="ew")
-
-        # Articles
-        articles_display = ", ".join(row['articles']) if row['articles'] else "Выбрать..."
-        # Text truncation to prevent breaking grid layout
-        if len(articles_display) > 25: 
-             articles_display = articles_display[:22] + "..."
-             
-        articles_btn = ctk.CTkButton(card, text=articles_display, 
-                                     fg_color="transparent", border_width=1, 
-                                     text_color=("gray10", "gray90"),
-                                     anchor="w",
-                                     height=28,
-                                     command=lambda: self.open_articles_dropdown(idx))
-        articles_btn.grid(row=0, column=4, pady=5, padx=5, sticky="ew")
-
-        # Payment
-        sum_label = ctk.CTkLabel(card, text=f"{row['sum']} RUB", anchor="w")
-        sum_label.grid(row=0, column=5, pady=10, padx=5, sticky="ew")
-
-        # Status
-        # processed is now int: 0, 1, 2
-        processed_state = int(row.get('processed', 0))
-        
-        status_color = "red"
-        status_text = "✗"
-        hover_color = "darkred"
-
-        if processed_state == 2:
-            status_color = "green"
-            status_text = "✔"
-            hover_color = "darkgreen"
-        elif processed_state == 1:
-            status_color = "orange" # Yellow/Orange
-            status_text = "?"
-            hover_color = "darkorange"
-        
-        status_frame = ctk.CTkFrame(card, fg_color="transparent")
-        status_frame.grid(row=0, column=6, padx=5, sticky="w")
-        
-        status_btn = ctk.CTkButton(
-            status_frame, text=status_text, width=40, height=32,
-            fg_color=status_color, 
-            border_width=2,
-            border_color="gray",
-            hover_color=hover_color,
-            command=lambda: self.toggle_processed(idx)
-        )
-        status_btn.pack(anchor="w")
-        
-        self.row_widgets[idx] = {
-            "articles_btn": articles_btn,
-            "sum_label": sum_label,
-            "status_btn": status_btn
-        }
 
     def copy_to_clipboard(self, value):
         self.clipboard_clear()
