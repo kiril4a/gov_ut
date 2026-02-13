@@ -1,224 +1,815 @@
-import customtkinter as ctk
 import re
-import gspread
 import threading
-from tkinter import filedialog, messagebox
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QLabel, QPushButton, QTableWidget, QTableWidgetItem, 
+                             QHeaderView, QAbstractItemView, QMessageBox, QFileDialog, 
+                             QDialog, QCheckBox, QComboBox, QLineEdit, QScrollArea, QFrame,
+                             QInputDialog)
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, pyqtSlot
+from PyQt6.QtGui import QAction, QColor, QPalette, QPixmap, QIcon
 from config import ARTICLES
 from auth import AdminPanel
+from google_service import GoogleService
 
-class App(ctk.CTk):
+# Worker for threaded tasks
+class Worker(QObject):
+    finished = pyqtSignal()
+    error = pyqtSignal(Exception)
+    result = pyqtSignal(object)
+
+    def __init__(self, func, *args, **kwargs):
+        super().__init__()
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+
+    def run(self):
+        try:
+            res = self.func(*self.args, **self.kwargs)
+            self.result.emit(res)
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(e)
+
+class ArticlesDialog(QDialog):
+    def __init__(self, current_articles, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Выберите статьи")
+        self.resize(350, 500)
+        self.selected_articles = set(current_articles)
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        widget = QWidget()
+        self.vbox = QVBoxLayout(widget)
+        
+        self.checks = {}
+        for code, label, cost in ARTICLES:
+            text = f"{code} - {label} ({cost} RUB)"
+            chk = QCheckBox(text)
+            if code in self.selected_articles:
+                chk.setChecked(True)
+            self.vbox.addWidget(chk)
+            self.checks[code] = chk
+            
+        self.vbox.addStretch()
+        scroll.setWidget(widget)
+        layout.addWidget(scroll)
+        
+        btn_save = QPushButton("Сохранить")
+        btn_save.clicked.connect(self.accept)
+        btn_save.setStyleSheet("background-color: #2e86de; color: white; padding: 8px;")
+        layout.addWidget(btn_save)
+
+    def get_selected(self):
+        return [code for code, chk in self.checks.items() if chk.isChecked()]
+
+class MainWindow(QMainWindow):
     def __init__(self, user_data):
         super().__init__()
-        
         self.user_data = user_data
         self.is_admin = user_data.get('Role') == 'Admin'
         
-        # Permissions: Admin gets everything, otherwise check flags
+        # Service instance
+        self.google_service = GoogleService()
+        
+        # Permissions
         if self.is_admin:
             self.can_edit = True
             self.can_upload = True
         else:
-            # Handle various truthy values just in case
             ce_val = str(user_data.get('CanEdit', '0')).lower()
             self.can_edit = ce_val in ('1', 'true', 'yes', 'on')
             
+            # Allow upload if permission is set to true
             cu_val = str(user_data.get('CanUpload', '0')).lower()
             self.can_upload = cu_val in ('1', 'true', 'yes', 'on')
+            
+         # If the user has rights to edit and sync (CanEdit), 
+         # they should also be able to open an existing Google Sheet.
+        if self.can_edit:
+             pass 
 
-        self.title(f"Employee Data - {user_data.get('Username')} ({user_data.get('Role')})")
-        self.geometry("1100x800")
+        self.setWindowTitle(f"Employee Data - {user_data.get('Username')} ({user_data.get('Role')})")
+        self.setWindowIcon(QIcon("image.png")) # Set application icon
+        self.resize(1200, 800)
+        
+        # Initialize Data
         self.data = []
         self.filtered_data = []
-        self.filter_statuses = [0, 1, 2]  # Default: all statuses selected
-        self.filter_articles = []         # Default: empty list means "all articles" (no filter)
-        self.row_widgets = {}
+        self.filter_statuses = [0, 1, 2]
+        self.filter_articles = []
+        self.current_page = 1
+        self.items_per_page = 10
         
-        # New Cache for Row Widgets
-        self.rows_cache = []
-        
-        # Sync state
         self.sync_mode = False 
         self.worksheet = None
-        self.auto_refresh_job = None
         self.is_loading = False
         
-        # Pagination state
-        self.current_page = 0
-        self.page_size = 13  # Reduced to fit on screen without scrolling
+        # Thread references
+        self.thread = None
+        self.worker = None
 
-        # Configure grid layout structure
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1) # Scrollable frame for staff
+        self._apply_theme()
+        self.init_ui()
 
-        # --- Header ---
-        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(20, 10))
-        self.header_frame.grid_columnconfigure(0, weight=1)
-
-        self.title_label = ctk.CTkLabel(self.header_frame, text="Employee Data", font=ctk.CTkFont(size=24, weight="bold"))
-        self.title_label.grid(row=0, column=0, sticky="w")
+    def _apply_theme(self):
+        # Dark Theme Palette
+        dark_palette = QPalette()
+        dark_palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
+        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+        dark_palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
+        QApplication.instance().setPalette(dark_palette)
         
-        # User info label
-        self.user_info_label = ctk.CTkLabel(self.header_frame, text=f"User: {self.user_data.get('Username')} | Role: {self.user_data.get('Role')}", font=ctk.CTkFont(size=12))
-        self.user_info_label.grid(row=0, column=3, sticky="e", padx=(10, 0))
+        # Additional Stylesheet
+        self.setStyleSheet("""
+            QWidget { background-color: #353535; color: white; font-family: "Segoe UI", sans-serif; }
+            QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }
+            QHeaderView::section { background-color: #353535; color: white; padding: 4px; border: none; border-bottom: 2px solid #555; font-weight: bold; font-size: 14px; }
+            
+            QTableWidget { 
+                gridline-color: transparent; 
+                border: none; 
+                background-color: #353535; 
+                font-size: 14px; 
+                font-weight: bold;
+                selection-background-color: transparent; /* Disable default blue selection */
+                outline: none; /* Remove dotted focus line */
+            }
+            /* Row Styling: Lighter gray background, remove border-radius to fix vertical stripes */
+            QTableWidget::item { 
+                padding: 10px; 
+                border-bottom: 6px solid #353535; 
+                background-color: #505050; 
+                border-radius: 0px;
+                border-left: none;
+                border-right: none;
+                outline: none;
+            }
+            
+            QTableWidget::item:selected {
+                background-color: #505050;
+                color: white;
+            }
+            
+            /* Custom Scrollbar */
+            QScrollBar:vertical {
+                border: none; background: #2d2d2d; width: 10px; margin: 0px; border-radius: 5px;
+            }
+            
+            /* Buttons */
+            QPushButton { 
+                background-color: #2a82da; color: white; border: none; 
+                border-radius: 8px; padding: 10px; min-width: 100px; font-weight: bold; 
+            }
+            QPushButton:hover { background-color: #3a92ea; }
+            QPushButton:pressed { background-color: #1a72ca; }
+            QPushButton:disabled { background-color: #555; color: #aaa; }
 
-        # Status Indicator (New)
-        self.loading_label = ctk.CTkLabel(self.header_frame, text="", font=ctk.CTkFont(size=12, slant="italic"))
-        self.loading_label.grid(row=0, column=4, sticky="e", padx=(10, 0))
+            /* Inputs */
+            QLineEdit { 
+                padding: 5px; border-radius: 8px; border: 1px solid #666; 
+                background-color: #252525; color: white; selection-background-color: #2a82da;
+            }
+            
+            /* Checkboxes */
+            QCheckBox { spacing: 8px; font-size: 14px; }
+            QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; background: white; border: 1px solid #ccc; }
+            QCheckBox::indicator:unchecked { background-color: white; }
+            QCheckBox::indicator:checked { background-color: #2ecc71; border: 1px solid #2ecc71; image: none; }
+            
+            QDialog { background-color: #353535; border-radius: 10px; }
+            
+            /* Remove dotted focus rectangle */
+            QTableWidget:focus { outline: none; }
+        """)
 
-        # Settings Button (replaces Menu)
-        self.settings_btn = ctk.CTkButton(self.header_frame, text="Settings", width=100, command=self.open_settings)
-        self.settings_btn.grid(row=0, column=1, sticky="e")
+    def init_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(30, 30, 30, 30)
+        main_layout.setSpacing(20)
+
+        # --- Header --- 
+        header_layout = QHBoxLayout()
+        
+        # Logo Image
+        logo_label = QLabel()
+        pixmap = QPixmap("image.png")
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(50, 50, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            logo_label.setPixmap(pixmap)
+            logo_label.setFixedSize(50, 50)
+            header_layout.addWidget(logo_label)
+        
+        title = QLabel("Employee Data")
+        title.setStyleSheet("font-size: 28px; font-weight: bold; color: #4facfe; margin-left: 10px;")
+        header_layout.addWidget(title)
+        
+        # --- Stats Blocks ---
+        self.stats_layout = QHBoxLayout()
+        self.stats_layout.setSpacing(10)
+        
+        def create_stat_block(label_text):
+            container = QFrame()
+            container.setStyleSheet("background-color: #444; border-radius: 8px; border: 1px solid #555;")
+            container.setFixedSize(150, 60)
+            
+            vbox = QVBoxLayout(container)
+            vbox.setContentsMargins(10, 5, 10, 5)
+            vbox.setSpacing(2)
+            
+            lbl_title = QLabel(label_text)
+            lbl_title.setStyleSheet("color: #aaa; font-size: 12px; font-weight: bold; border: none; background: transparent;")
+            lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            lbl_value = QLabel("0")
+            lbl_value.setStyleSheet("color: white; font-size: 18px; font-weight: bold; border: none; background: transparent;")
+            lbl_value.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            vbox.addWidget(lbl_title)
+            vbox.addWidget(lbl_value)
+            
+            return container, lbl_value
+
+        self.block_total, self.lbl_total_count = create_stat_block("Всего людей")
+        self.block_violators, self.lbl_violators_count = create_stat_block("Нарушителей")
+        self.block_sum, self.lbl_total_sum = create_stat_block("Общая сумма")
+        
+        # Style specific for Sum to look dangerous/important
+        self.lbl_total_sum.setStyleSheet("color: #ff6b6b; font-size: 18px; font-weight: bold; border: none; background: transparent;")
+
+        self.stats_layout.addWidget(self.block_total)
+        self.stats_layout.addWidget(self.block_violators)
+        self.stats_layout.addWidget(self.block_sum)
+        
+        header_layout.addSpacing(20)
+        header_layout.addLayout(self.stats_layout)
+        
+        header_layout.addStretch()
+        
+        settings_btn = QPushButton("⚙ Настройки")
+        settings_btn.clicked.connect(self.open_settings)
+        header_layout.addWidget(settings_btn)
         
         if self.is_admin:
-            self.admin_btn = ctk.CTkButton(self.header_frame, text="Admin Panel", width=100, fg_color="darkred", hover_color="red", command=self.open_admin_panel)
-            self.admin_btn.grid(row=0, column=2, sticky="e", padx=(10, 0))
-
-        # --- Sort Controls ---
-        self.sort_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.sort_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(0, 10))
-        
-        self.sort_label = ctk.CTkLabel(self.sort_frame, text="Сортировка:", text_color="gray")
-        self.sort_label.pack(side="left", padx=(0, 10))
-
-        # Filter Button
-        self.filter_btn = ctk.CTkButton(self.sort_frame, text="Фильтр", width=80, height=24, font=ctk.CTkFont(size=12), command=self.open_filter)
-        self.filter_btn.pack(side="left", padx=5)
-
-        # Helper to create small sort buttons
-        def create_sort_btn(text, command):
-            btn = ctk.CTkButton(self.sort_frame, text=text, command=command, width=80, height=24, font=ctk.CTkFont(size=12))
-            btn.pack(side="left", padx=5)
-            return btn
-
-        create_sort_btn("Имя A-Z", lambda: self.sort_staff('name', True))
-        create_sort_btn("Имя Z-A", lambda: self.sort_staff('name', False))
-        create_sort_btn("Ранг ↑", lambda: self.sort_staff('rank', True))
-        create_sort_btn("Ранг ↓", lambda: self.sort_staff('rank', False))
-
-        # --- Pagination Controls ---
-        self.pages_frame = ctk.CTkFrame(self, fg_color="transparent", height=40)
-        self.pages_frame.grid(row=3, column=0, sticky="ew", padx=20, pady=10)
-        
-        self.prev_btn = ctk.CTkButton(self.pages_frame, text="< Назад", command=self.prev_page, width=100)
-        self.prev_btn.pack(side="left")
-        
-        self.page_label = ctk.CTkLabel(self.pages_frame, text="Страница 1", font=("Arial", 14))
-        self.page_label.pack(side="left", expand=True)
-
-        self.next_btn = ctk.CTkButton(self.pages_frame, text="Вперед >", command=self.next_page, width=100)
-        self.next_btn.pack(side="right")
-
-        # --- Staff List (Scrollable) ---
-        self.staff_scroll = ctk.CTkScrollableFrame(self, label_text="Список сотрудников")
-        self.staff_scroll.grid(row=2, column=0, sticky="nsew", padx=20, pady=(10, 0)) # Adjusted padding
-        self.staff_scroll.grid_columnconfigure(0, weight=1)
-
-    def open_settings(self):
-        # Create a settings popup
-        popup = ctk.CTkToplevel(self)
-        popup.title("Настройки")
-        popup.geometry("300x200")
-        popup.grab_set()
-        
-        ctk.CTkLabel(popup, text="Источник данных:", font=("Arial", 16, "bold")).pack(pady=10)
-        
-        def load_local():
-            popup.destroy()
-            self.stop_auto_refresh()
-            self.load_file()
+            admin_btn = QPushButton("🛡 Админ панель")
+            admin_btn.setStyleSheet("background-color: #d63031; color: white; border: none; border-radius: 8px; padding: 10px;")
+            admin_btn.clicked.connect(self.open_admin_panel)
+            header_layout.addWidget(admin_btn)
             
-        def connect_google():
-            popup.destroy()
-            input_dialog = ctk.CTkInputDialog(text="Введите название листа для синхронизации:", title="Название листа")
-            sheet_title = input_dialog.get_input()
-            if sheet_title:
-                self.load_from_google(sheet_title)
+        # User Info
+        user_text = f"{self.user_data.get('Username')} ({self.user_data.get('Role')})"
+        self.user_info_label = QLabel(user_text)
+        self.user_info_label.setStyleSheet("font-weight: bold; padding: 8px; border: 1px solid #555; border-radius: 8px; background: #444;")
+        header_layout.addWidget(self.user_info_label)
+        
+        self.loading_label = QLabel("")
+        self.loading_label.setStyleSheet("font-style: italic; color: #f1c40f;")
+        header_layout.addWidget(self.loading_label)
 
-        ctk.CTkButton(popup, text="📂 Создать из файла (.txt)", command=load_local).pack(pady=10, fill="x", padx=20)
-        ctk.CTkButton(popup, text="☁ Синхронизация (Google Sheets)", command=connect_google, fg_color="purple", hover_color="darkviolet").pack(pady=10, fill="x", padx=20)
+        main_layout.addLayout(header_layout)
 
-    def open_admin_panel(self):
-        AdminPanel(self)
+        # --- Controls --- 
+        controls_layout = QHBoxLayout()
+        
+        lbl_sort = QLabel("Сортировка:")
+        lbl_sort.setStyleSheet("font-weight: bold; font-size: 16px;")
+        controls_layout.addWidget(lbl_sort)
+        
+        filter_btn = QPushButton("🌪 Фильтр")
+        filter_btn.clicked.connect(self.open_filter)
+        controls_layout.addWidget(filter_btn)
+        
+        def create_sort_btn(text, key, asc):
+            btn = QPushButton(text)
+            btn.clicked.connect(lambda: self.sort_staff(key, asc))
+            controls_layout.addWidget(btn)
 
-    def set_loading(self, is_loading, text=""):
-        self.is_loading = is_loading
-        if is_loading:
-            self.loading_label.configure(text=text if text else "Загрузка...")
+        create_sort_btn("Имя A-Z", 'name', True)
+        create_sort_btn("Имя Z-A", 'name', False)
+        create_sort_btn("Ранг ↑", 'rank', True)
+        create_sort_btn("Ранг ↓", 'rank', False)
+        
+        controls_layout.addStretch()
+        main_layout.addLayout(controls_layout)
+
+        # --- Table --- 
+        self.table = QTableWidget()
+        self.table.setColumnCount(7) # Added number column back
+        self.table.setHorizontalHeaderLabels(["#", "Имя", "Статик", "Ранг", "Статьи", "Сумма", "Статус"])
+        self.table.setShowGrid(False)  # Remove grid lines
+        self.table.setFrameShape(QFrame.Shape.NoFrame) # Remove frame
+        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus) # Remove dotted focus line
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 80) # Increased width for numbering
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents) # Status
+        
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        
+        # Connect single click for status toggling
+        self.table.cellClicked.connect(self.on_cell_clicked)
+        self.table.cellDoubleClicked.connect(self.on_cell_double_click)
+        
+        # Enable mouse tracking for hover effects if needed, though stylesheet handles simple hovers
+        self.table.setMouseTracking(True)
+        
+        main_layout.addWidget(self.table)
+        
+        # --- Pagination ---
+        pagination_layout = QHBoxLayout()
+        pagination_layout.addStretch()
+        
+        self.btn_prev = QPushButton("◄ Prev")
+        self.btn_prev.setFixedWidth(80)
+        self.btn_prev.clicked.connect(self.prev_page)
+        pagination_layout.addWidget(self.btn_prev)
+        
+        self.page_input = QLineEdit()
+        self.page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_input.setFixedWidth(50)
+        self.page_input.returnPressed.connect(self.jump_to_page)
+        pagination_layout.addWidget(self.page_input)
+        
+        self.lbl_total_pages = QLabel("/ 1")
+        self.lbl_total_pages.setStyleSheet("font-weight: bold; color: #aaa;")
+        pagination_layout.addWidget(self.lbl_total_pages)
+        
+        self.btn_next = QPushButton("Next ►")
+        self.btn_next.setFixedWidth(80)
+        self.btn_next.clicked.connect(self.next_page)
+        pagination_layout.addWidget(self.btn_next)
+        
+        pagination_layout.addStretch()
+        main_layout.addLayout(pagination_layout)
+
+    def set_loading(self, show, message=""):
+        self.is_loading = show
+        if show:
+            self.loading_label.setText(message)
+            self.centralWidget().setEnabled(False) 
         else:
-            self.loading_label.configure(text="")
+            self.loading_label.setText("")
+            self.centralWidget().setEnabled(True)
 
-    def load_from_google(self, sheet_title):
-        if not self.can_upload:
-            messagebox.showwarning("Доступ запрещен", "У вас нет прав на синхронизацию.")
-            return
-        
-        self.set_loading(True, "Подключение к Google...")
-        
-        def worker():
+    def closeEvent(self, event):
+        if self.thread is not None:
             try:
-                gc = gspread.service_account(filename='service_account.json')
-                
-                # Open spreadsheet named "Gov UT" 
-                spreadsheet_name = "Gov UT" 
-                try:
-                    sh = gc.open(spreadsheet_name)
-                except gspread.SpreadsheetNotFound:
-                    sh = gc.create(spreadsheet_name)
-                    # If creating, maybe share?
-                    # sh.share('me@gmail.com', perm_type='user', role='writer')
-                
-                try:
-                    ws = sh.worksheet(sheet_title)
-                except gspread.WorksheetNotFound:
-                    # If loading from google and sheet is missing, maybe create it?
-                    ws = sh.add_worksheet(title=sheet_title, rows=100, cols=20)
-                    ws.append_row(["Name", "Static ID", "Rank", "Articles", "Sum", "Processed"])
+                if self.thread.isRunning():
+                    self.thread.quit()
+                    self.thread.wait()
+            except RuntimeError:
+                pass
+        event.accept()
 
-                # Update UI thread
-                self.after(0, lambda: self._on_google_connected(ws))
-                
-            except Exception as e:
-                self.after(0, lambda: self._on_google_error(e))
+    def on_cell_clicked(self, row, col):
+        # Handle single click for Status column (index 6 now)
+        if col == 6:
+            name_item = self.table.item(row, 1) # Name is now at col 1
+            if name_item:
+                data_idx = name_item.data(Qt.ItemDataRole.UserRole)
+                self.toggle_processed(data_idx)
 
-        threading.Thread(target=worker, daemon=True).start()
+    def on_cell_double_click(self, row, col):
+        # Always try to get index from column 1 (Name)
+        name_item = self.table.item(row, 1)
+        if not name_item: return
+        data_idx = name_item.data(Qt.ItemDataRole.UserRole)
+        
+        item = self.table.item(row, col)
+        
+        if col in (1, 2): # Name, Static
+            QApplication.clipboard().setText(item.text())
+            
+        if col == 4: # Articles
+            self.open_articles_dialog(data_idx)
+            
+        # Status double click removed as it's handled by single click now
+
+    def run_threaded(self, func, *args, on_result=None, **kwargs):
+        self.thread = QThread(self) 
+        self.worker = Worker(func, *args, **kwargs)
+        
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        
+        if on_result:
+            self.worker.result.connect(on_result)
+            
+        self.worker.error.connect(lambda e: self.set_loading(False, f"Error: {e}"))
+        
+        self.thread.start()
 
     def _on_google_connected(self, ws):
         self.worksheet = ws
         self.sync_mode = True
-        self.set_loading(False)
+        self.set_loading(False, "Connected")
         self.refresh_google_data()
-        self.start_auto_refresh()
+        
+    def _on_upload_complete(self, ws):
+        self._on_google_connected(ws)
+    
+    def refresh_google_data(self):
+        if not self.sync_mode or not self.worksheet: return
+        self.set_loading(True, "Updating data...")
+        self.run_threaded(self.google_service.fetch_all_values, self.worksheet, on_result=self._on_google_data_fetched)
 
-    def _on_google_error(self, error):
-        self.sync_mode = False
+    def _on_google_data_fetched(self, rows):
+        if not rows: 
+            self.set_loading(False)
+            return
+
+        if len(rows) > 0 and (rows[0][0] == "Name" or "Name" in rows[0]):
+            rows = rows[1:]
+
+        new_data = []
+        for r in rows:
+            while len(r) < 6:
+                r.append("")
+                
+            name = r[0]
+            statik = r[1]
+            rank = r[2]
+            arts_str = r[3]
+            s_sum = r[4]
+            proc = r[5]
+            
+            articles = [x.strip() for x in arts_str.split(',') if x.strip()]
+            
+            new_data.append({
+                "name": name,
+                "statik": statik,
+                "rank": rank,
+                "articles": articles,
+                "sum": s_sum if s_sum else "0",
+                "processed": int(proc) if str(proc).isdigit() else 0
+            })
+            
+        self.data = new_data
+        self.apply_filters()
         self.set_loading(False)
-        messagebox.showerror("Google Error", f"Ошибка подключения: {error}\nПроверьте service_account.json")
+
+    def update_google_row(self, row_data):
+        if not self.worksheet: return
+        
+        art_str = ", ".join(row_data['articles'])
+        self.google_service.update_row_data(self.worksheet, row_data['name'], art_str, row_data['sum'], row_data['processed'])
+
+    def toggle_processed(self, idx):
+        if not self.can_edit: return
+        
+        if idx >= len(self.filtered_data): return
+        
+        row = self.filtered_data[idx]
+        current_state = int(row['processed'])
+        new_state = (current_state + 1) % 3
+        row['processed'] = new_state
+        
+        self.render_staff() 
+
+        if self.sync_mode:
+            self.run_threaded(self.update_google_row, row)
+
+    def open_articles_dialog(self, idx):
+        if not self.can_edit: return
+        if idx >= len(self.filtered_data): return
+        
+        row = self.filtered_data[idx]
+        
+        dlg = ArticlesDialog(row['articles'], self)
+        if dlg.exec():
+            new_selection = dlg.get_selected()
+            row['articles'] = new_selection
+            
+            total = 0
+            for code, _, cost in ARTICLES:
+                if code in new_selection:
+                    total += cost
+            row['sum'] = total
+            
+            self.render_staff()
+            
+            if self.sync_mode:
+                self.run_threaded(self.update_google_row, row)
+
+    def render_staff(self):
+        # Update Stats
+        total_people = len(self.filtered_data)
+        
+        # Count violators (processed != 2 (Checked) OR sum > 0? Let's assume anyone with a sum > 0 is a violator)
+        # Or maybe anyone in the list is a violator? Let's assume sum > 0.
+        violators = sum(1 for r in self.filtered_data if r.get('sum') != '0' and r.get('sum') != 0)
+        
+        total_sum_val = 0
+        for r in self.filtered_data:
+            try:
+                s = int(str(r.get('sum', 0)))
+                total_sum_val += s
+            except: pass
+            
+        self.lbl_total_count.setText(str(total_people))
+        self.lbl_violators_count.setText(str(violators))
+        self.lbl_total_sum.setText(f"{total_sum_val:,}".replace(",", " "))
+
+        # Pagination Logic
+        total_items = len(self.filtered_data)
+        total_pages = (total_items + self.items_per_page - 1) // self.items_per_page
+        if total_pages < 1: total_pages = 1
+        
+        if self.current_page > total_pages: self.current_page = total_pages
+        if self.current_page < 1: self.current_page = 1
+        
+        self.page_input.setText(str(self.current_page))
+        self.lbl_total_pages.setText(f"/ {total_pages}")
+        
+        start_idx = (self.current_page - 1) * self.items_per_page
+        end_idx = start_idx + self.items_per_page
+        page_data = self.filtered_data[start_idx:end_idx]
+        
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(page_data))
+        
+        # Set row height to be larger for spacing look
+        for i in range(len(page_data)):
+            self.table.setRowHeight(i, 60) 
+
+        for i, row in enumerate(page_data):
+            real_idx = start_idx + i
+            
+            # --- Column 0: Number ---
+            num_item = QTableWidgetItem(str(real_idx + 1))
+            self.style_table_item(num_item, is_start=True)
+            self.table.setItem(i, 0, num_item)
+            
+            # --- Column 1: Name ---
+            name_item = QTableWidgetItem(str(row['name']))
+            name_item.setData(Qt.ItemDataRole.UserRole, real_idx) 
+            self.style_table_item(name_item, is_start=True)
+            self.table.setItem(i, 1, name_item)
+            
+            # --- Column 2: Static ---
+            statik_item = QTableWidgetItem(str(row['statik']))
+            self.style_table_item(statik_item)
+            self.table.setItem(i, 2, statik_item)
+            
+            # --- Column 3: Rank ---
+            rank_item = QTableWidgetItem(str(row['rank']))
+            self.style_table_item(rank_item)
+            self.table.setItem(i, 3, rank_item)
+            
+            # --- Column 4: Articles (Button) ---
+            # Placeholder item for background styling
+            dummy_item = QTableWidgetItem("")
+            self.style_table_item(dummy_item)
+            self.table.setItem(i, 4, dummy_item)
+            
+            # Create the interactive button
+            full_text = ", ".join(row['articles']) if row['articles'] else "-----"
+            
+            # Truncate text to avoid layout expanding too much
+            display_text = full_text
+            if len(display_text) > 40:
+                display_text = display_text[:37] + "..."
+                
+            art_btn = QPushButton(display_text)
+            art_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            art_btn.setFixedHeight(30) 
+            art_btn.setToolTip(full_text)
+            
+            if self.can_edit:
+                art_btn.clicked.connect(lambda _, idx=real_idx: self.open_articles_dialog(idx))
+            else:
+                art_btn.setEnabled(False)
+
+            art_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: white; 
+                    color: black; 
+                    border-radius: 6px; 
+                    text-align: center; 
+                    padding: 5px;
+                    border: 1px solid #ccc;
+                    font-weight: normal;
+                    font-size: 14px;
+                }
+                QPushButton:hover { background-color: #f0f0f0; }
+                QPushButton:disabled { background-color: #e0e0e0; color: #888; }
+            """)
+            
+            # Container to center vertically and add margins inside cell
+            widget_container = QWidget()
+            widget_container.setStyleSheet("background-color: transparent;")
+            layout = QHBoxLayout(widget_container)
+            layout.setContentsMargins(5, 0, 5, 0) # Removed bottom margin to center properly
+            layout.setAlignment(Qt.AlignmentFlag.AlignCenter) # Center alignment
+            layout.addWidget(art_btn)
+            self.table.setCellWidget(i, 4, widget_container)
+            
+            # --- Column 5: Sum ---
+            sum_item = QTableWidgetItem(str(row['sum']))
+            self.style_table_item(sum_item)
+            self.table.setItem(i, 5, sum_item)
+            
+            # --- Column 6: Status ---
+            status_val = int(row.get('processed', 0))
+            status_text = "✗"
+            color_hex = "#ff4d4d" 
+            if status_val == 1:
+                status_text = "?"
+                color_hex = "#ffa502" 
+            elif status_val == 2:
+                status_text = "✔"
+                color_hex = "#2ecc71" 
+                
+            status_item = QTableWidgetItem(status_text)
+            status_item.setForeground(QColor(color_hex))
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.style_table_item(status_item, is_end=True)
+            self.table.setItem(i, 6, status_item)
+
+    def style_table_item(self, item, is_start=False, is_end=False):
+        # We simulate rounded rows by setting a specific background on items
+        # and using border-radius on the first and last items of the row.
+        # However, QTableWidget styling is limited for individual cell borders.
+        # The main styling is done in the QTableWidget::item stylesheet in _apply_theme.
+        # Here we just ensure alignment and basic properties.
+        
+        item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # We rely on the stylesheet for the main look, but to fix the "stripes" (white gaps between cells),
+        # we need to ensure the cells touch each other horizontally.
+        # The key is padding/border in the stylesheet.
+        # Also setting background color to lighter gray for rows as requested.
+
+    def sort_staff(self, key, ascending=True):
+        def sort_key(row):
+            val = row.get(key, "")
+            if key == 'rank':
+                # Try to convert to int for proper numeric sorting if possible
+                try:
+                    return int(val)
+                except ValueError:
+                    return str(val).lower()
+            return str(val).lower()
+
+        self.filtered_data.sort(key=sort_key, reverse=not ascending)
+        self.render_staff()
+
+    def prev_page(self):
+        if self.current_page > 1:
+            self.current_page -= 1
+            self.render_staff()
+            
+    def next_page(self):
+        total_items = len(self.filtered_data)
+        total_pages = (total_items + self.items_per_page - 1) // self.items_per_page
+        if self.current_page < total_pages:
+            self.current_page += 1
+            self.render_staff()
+            
+    def jump_to_page(self):
+        try:
+            p = int(self.page_input.text())
+            self.current_page = p
+            self.render_staff()
+        except ValueError:
+            pass
+
+    def open_settings(self):
+        # Settings Dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Настройки")
+        dialog.resize(300, 150)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        btn_local = QPushButton("📂 Создать из файла (.txt)")
+        btn_local.clicked.connect(lambda: [dialog.close(), self.load_file()])
+        layout.addWidget(btn_local)
+        
+        btn_google = QPushButton("☁ Синхронизация (Google Sheets)")
+        btn_google.clicked.connect(lambda: [dialog.close(), self.connect_google_dialog()])
+        layout.addWidget(btn_google)
+        
+        dialog.exec()
+    
+    def connect_google_dialog(self):
+        text, ok = QInputDialog.getText(self, "Название листа", "Введите название листа для синхронизации:")
+        if ok and text:
+            self.load_from_google(text)
+
+    def open_admin_panel(self):
+        AdminPanel(self).exec()
+        
+    def open_filter(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Фильтр")
+        dialog.resize(300, 450)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        
+        layout.addWidget(QLabel("Статусы:"))
+        status_checks = {}
+        for code, text in [(0, "Не обработан"), (1, "Вопрос"), (2, "Обработан")]:
+            chk = QCheckBox(text)
+            chk.setChecked(code in self.filter_statuses)
+            layout.addWidget(chk)
+            status_checks[code] = chk
+            
+        layout.addWidget(QLabel("Статьи:"))
+        scroll = QScrollArea()
+        scroll.setStyleSheet("background-color: #404040; border-radius: 5px; border: none;")
+        scroll_widget = QWidget()
+        scroll_widget.setStyleSheet("background-color: #404040;")
+        scroll_layout = QVBoxLayout(scroll_widget)
+        article_checks = {}
+        
+        # Sort articles for better list
+        sorted_articles = sorted(ARTICLES, key=lambda x: x[0])
+        
+        for code, label, _ in sorted_articles:
+            chk = QCheckBox(f"{code} ({label})")
+            chk.setChecked(code in self.filter_articles)
+            scroll_layout.addWidget(chk)
+            article_checks[code] = chk
+            
+        scroll_widget.setLayout(scroll_layout)
+        scroll.setWidget(scroll_widget)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll)
+        
+        btns_layout = QHBoxLayout()
+        
+        reset_btn = QPushButton("Сбросить")
+        reset_btn.setStyleSheet("background-color: #7f8c8d;")
+        def reset():
+            for chk in status_checks.values(): chk.setChecked(True)
+            for chk in article_checks.values(): chk.setChecked(False)
+        reset_btn.clicked.connect(reset)
+        btns_layout.addWidget(reset_btn)
+        
+        apply_btn = QPushButton("Применить")
+        def apply():
+            self.filter_statuses = [c for c, chk in status_checks.items() if chk.isChecked()]
+            self.filter_articles = [c for c, chk in article_checks.items() if chk.isChecked()]
+            self.apply_filters()
+            dialog.accept()
+            
+        apply_btn.clicked.connect(apply)
+        btns_layout.addWidget(apply_btn)
+        
+        layout.addLayout(btns_layout)
+        dialog.exec()
+
+    def apply_filters(self):
+        self.filtered_data = [row for row in self.data if row['processed'] in self.filter_statuses and 
+                              (not self.filter_articles or any(a in self.filter_articles for a in row['articles']))]
+        self.render_staff()
 
     def load_file(self):
         if not self.can_upload:
-            messagebox.showwarning("Доступ запрещен", "У вас нет прав на загрузку файлов.")
-            return
-
-        file_path = filedialog.askopenfilename(parent=self, filetypes=[("Text files", "*.txt")])
-        if not file_path:
+            QMessageBox.warning(self, "Доступ запрещен", "Нет прав")
             return
             
-        # Ask for new sheet name
-        input_dialog = ctk.CTkInputDialog(text="Введите название нового листа для экспорта:", title="Название листа")
-        sheet_name = input_dialog.get_input()
-        if not sheet_name:
-            return
+        fname, _ = QFileDialog.getOpenFileName(self, "Открыть", "", "Text files (*.txt)")
+        if not fname: return
+
+        text, ok = QInputDialog.getText(self, "Название листа", "Введите название нового листа:")
+        if not ok or not text: return
+        sheet_name = text
 
         try:
-            new_data = [] # Temporary list
-            with open(file_path, encoding="utf-8") as f:
-                for line in f:
-                    if not line.strip():
-                        continue
+            new_data = []
+            with open(fname, encoding="utf-8") as f:
+                 for line in f:
+                    if not line.strip(): continue
                     parts = line.strip().split("\t")
-                    if len(parts) < 2:
-                        continue
+                    if len(parts) < 2: continue
                     
                     name_part = parts[0].strip()
                     rank = parts[1].strip()
@@ -235,559 +826,37 @@ class App(ctk.CTk):
                         "processed": 0 
                     })
             self.data = new_data
+            self.filtered_data = list(self.data)
+            self.render_staff()
             
             self.set_loading(True, "Загрузка в Google...")
-            
-            # Switch to sync mode with new sheet upload in background
-            def worker():
-                try:
-                    gc = gspread.service_account(filename='service_account.json')
-                    
-                    try:
-                        sh = gc.open("Gov UT")
-                    except gspread.SpreadsheetNotFound:
-                        sh = gc.create("Gov UT")
-
-                    # Check if exists, maybe delete or define usage
-                    try:
-                        ws = sh.worksheet(sheet_name)
-                        ws.clear()
-                    except:
-                        ws = sh.add_worksheet(title=sheet_name, rows=len(self.data)+10, cols=20)
-                    
-                    # Prepare data for upload
-                    headers = ["Name", "Static ID", "Rank", "Articles", "Sum", "Processed"]
-                    values = [headers]
-                    for item in self.data:
-                         # Correct structure for upload: Name, Static, Rank, Articles (empty), Sum (0), Status (0)
-                         values.append([
-                             item['name'],
-                             item['statik'], 
-                             item['rank'],
-                             "", 
-                             0,
-                             0
-                         ])
-                    
-                    ws.update(range_name="A1", values=values)
-                    
-                    self.after(0, lambda: self._on_file_loaded(ws))
-                    
-                except Exception as e:
-                    self.after(0, lambda: self._on_file_load_error(e))
-
-            threading.Thread(target=worker, daemon=True).start()
+            self.run_threaded(self.google_service.upload_sheet_data, sheet_name, self.data, on_result=self._on_upload_complete)
             
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load file: {e}")
-
-    def _on_file_loaded(self, ws):
-        self.worksheet = ws
-        self.sync_mode = True
-        self.set_loading(False)
-        self.filtered_data = list(self.data)
-        self.current_page = 0
-        self.render_staff()
-        self.refresh_google_data() 
-        self.start_auto_refresh()
-
-    def _on_file_load_error(self, e):
-        self.set_loading(False)
-        messagebox.showerror("Sync Error", f"Не удалось создать лист в Google: {e}")
-        self.sync_mode = False 
-        # Fallback to local only render if upload failed?
-        self.filtered_data = list(self.data) 
-        self.current_page = 0
-        self.render_staff()
-
-    def toggle_processed(self, idx):
-        if not self.can_edit:
-             return
-
-        row = self.filtered_data[idx]
-        current_state = int(row['processed'])
-        new_state = (current_state + 1) % 3
-        row['processed'] = new_state
+            QMessageBox.critical(self, "Error", str(e))
+            self.set_loading(False)
+    
+    def load_from_google(self, sheet_title):
+        # Allow if user has edit rights (to sync) OR upload rights (to create/sync)
+        if not self.can_edit and not self.can_upload:
+            QMessageBox.warning(self, "Error", "No rights to sync")
+            return
         
-        # Immediate UI Update
-        self.filtered_data[idx] = row
-        widgets = self.row_widgets.get(idx)
-        if widgets:
-            btn = widgets["status_btn"]
-            if new_state == 2:
-                btn.configure(text="✔", fg_color="green", hover_color="darkgreen")
-            elif new_state == 1:
-                btn.configure(text="?", fg_color="orange", hover_color="darkorange")
-            else:
-                btn.configure(text="✗", fg_color="red", hover_color="darkred")
-
-        if self.sync_mode:
-            # Send update in background
-            threading.Thread(target=self.update_google_row, args=(row,), daemon=True).start()
-
-    def render_staff(self):
-        """Оптимизированная отрисовка через переиспользование виджетов"""
-
-        # Clear existing headers if any (usually we would want to keep them static too, but for now we clear or recreate)
-        # To be fully efficient, headers should be created ONCE in __init__ and never destroyed.
-        # But let's stick to cleaning up scrollable frame ONLY if we haven't initialized headers yet.
+        self.set_loading(True, "Connecting...")
         
-        # NOTE: In this approach, we assume the scrollable frame is ONLY used for rows. 
-        # If headers are INSIDE the scrollable frame, we need to handle them.
-        # Let's put headers once.
-        
-        if not hasattr(self, 'headers_created'):
-            self._create_headers()
-            self.headers_created = True
+        self.run_threaded(self.google_service.connect_worksheet, sheet_title, on_result=self._on_google_connected)
 
-        # 1. Determine data range for current page
-        start = self.current_page * self.page_size
-        end = start + self.page_size
-        page_items = self.filtered_data[start:end]
-        
-        # Update page label
-        total_items = len(self.filtered_data)
-        total_pages = (total_items + self.page_size - 1) // self.page_size
-        if total_pages == 0: total_pages = 1
-        
-        self.page_label.configure(text=f"Страница {self.current_page + 1} из {total_pages}")
-        self.prev_btn.configure(state="normal" if self.current_page > 0 else "disabled")
-        self.next_btn.configure(state="normal" if self.current_page < total_pages - 1 else "disabled")
-
-        # 2. Iterate through page size
-        self.row_widgets.clear() # Clear logic mapping, but keep cache
-        
-        for i in range(self.page_size):
-            # Get or create row widget from cache
-            row_widgets = self._get_or_create_row_widget(i)
-            
-            if i < len(page_items):
-                # We have data for this row
-                item_data = page_items[i]
-                real_idx = start + i 
-                
-                self._update_row_widget(row_widgets, item_data, real_idx)
-                row_widgets['frame'].pack(fill="x", pady=4, padx=5)
-                
-                # Update row_widgets mapping for logic access (e.g. from popup)
-                self.row_widgets[real_idx] = {
-                    "articles_btn": row_widgets['btn_articles'],
-                    "sum_label": row_widgets['lbl_sum'],
-                    "status_btn": row_widgets['btn_status']
-                }
-            else:
-                # No data (end of page), hide widget
-                row_widgets['frame'].pack_forget()
-
-    def _create_headers(self):
-        headers_frame = ctk.CTkFrame(self.staff_scroll, fg_color="transparent")
-        headers_frame.pack(fill="x", pady=(0, 5), padx=5)
-        
-        headers = ["№", "Name", "Static ID", "Rank", "Articles", "Payment", "Status"]
-        
-        headers_frame.grid_columnconfigure(0, weight=1, uniform="group1") 
-        headers_frame.grid_columnconfigure(1, weight=4, uniform="group1") 
-        headers_frame.grid_columnconfigure(2, weight=2, uniform="group1") 
-        headers_frame.grid_columnconfigure(3, weight=2, uniform="group1") 
-        headers_frame.grid_columnconfigure(4, weight=4, uniform="group1") 
-        headers_frame.grid_columnconfigure(5, weight=2, uniform="group1") 
-        headers_frame.grid_columnconfigure(6, weight=1, uniform="group1") 
-
-        for i, h in enumerate(headers):
-            lbl = ctk.CTkLabel(headers_frame, text=h, font=ctk.CTkFont(size=12, weight="bold"), text_color="gray", anchor="w")
-            lbl.grid(row=0, column=i, sticky="ew", padx=5)
-
-    def _get_or_create_row_widget(self, index):
-        """Returns a dict of widget references for a row. Creates if not in cache."""
-        if index < len(self.rows_cache):
-            return self.rows_cache[index]
-
-        # Create new row frame
-        card = ctk.CTkFrame(self.staff_scroll, corner_radius=10, fg_color=("gray85", "gray17")) 
-        
-        # Grid layout matching headers
-        card.grid_columnconfigure(0, weight=1, uniform="group1") # No
-        card.grid_columnconfigure(1, weight=4, uniform="group1") # Name
-        card.grid_columnconfigure(2, weight=2, uniform="group1") # Static
-        card.grid_columnconfigure(3, weight=2, uniform="group1") # Rank
-        card.grid_columnconfigure(4, weight=4, uniform="group1") # Articles
-        card.grid_columnconfigure(5, weight=2, uniform="group1") # Payment
-        card.grid_columnconfigure(6, weight=1, uniform="group1") # Status
-
-        # 1. Number
-        lbl_num = ctk.CTkLabel(card, text="", text_color="gray", anchor="w")
-        lbl_num.grid(row=0, column=0, pady=10, padx=5, sticky="ew")
-
-        # 2. Name
-        lbl_name = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=14, weight="bold"), anchor="w")
-        lbl_name.grid(row=0, column=1, pady=10, padx=5, sticky="ew")
-        
-        # 3. Static ID
-        lbl_static = ctk.CTkLabel(card, text="", text_color="gray", anchor="w")
-        lbl_static.grid(row=0, column=2, pady=10, padx=5, sticky="ew")
-
-        # 4. Rank
-        lbl_rank = ctk.CTkLabel(card, text="", anchor="w")
-        lbl_rank.grid(row=0, column=3, pady=10, padx=5, sticky="ew")
-
-        # 5. Articles (Button)
-        btn_articles = ctk.CTkButton(card, text="", 
-                                     fg_color="transparent", border_width=1, 
-                                     text_color=("gray10", "gray90"),
-                                     anchor="w",
-                                     height=28)
-        btn_articles.grid(row=0, column=4, pady=5, padx=5, sticky="ew")
-
-        # 6. Payment
-        lbl_sum = ctk.CTkLabel(card, text="", anchor="w")
-        lbl_sum.grid(row=0, column=5, pady=10, padx=5, sticky="ew")
-
-        # 7. Status (Button inside frame to align)
-        status_frame = ctk.CTkFrame(card, fg_color="transparent")
-        status_frame.grid(row=0, column=6, padx=5, sticky="w")
-        
-        btn_status = ctk.CTkButton(
-            status_frame, text="", width=40, height=32,
-            border_width=2,
-            border_color="gray"
-        )
-        btn_status.pack(anchor="w")
-
-        widgets = {
-            'frame': card,
-            'lbl_num': lbl_num,
-            'lbl_name': lbl_name,
-            'lbl_static': lbl_static,
-            'lbl_rank': lbl_rank,
-            'btn_articles': btn_articles,
-            'lbl_sum': lbl_sum,
-            'btn_status': btn_status
-        }
-        
-        self.rows_cache.append(widgets)
-        return widgets
-
-    def _update_row_widget(self, widgets, row, real_idx):
-        """Populates existing widgets with data."""
-        
-        # Index display (real_idx + 1)
-        widgets['lbl_num'].configure(text=str(real_idx + 1))
-        
-        # Name
-        widgets['lbl_name'].configure(text=str(row['name']))
-        # Re-bind click events (overwrite previous bindings)
-        widgets['lbl_name'].bind('<Button-1>', lambda e, v=row['name']: self.copy_to_clipboard(v))
-        
-        # Static
-        statik_val = str(row['statik'])
-        widgets['lbl_static'].configure(text=statik_val)
-        widgets['lbl_static'].bind('<Button-1>', lambda e, v=statik_val: self.copy_to_clipboard(v))
-
-        # Rank
-        widgets['lbl_rank'].configure(text=str(row['rank']))
-
-        # Articles
-        articles_display = ", ".join(row['articles']) if row['articles'] else "Выбрать..."
-        if len(articles_display) > 25: 
-             articles_display = articles_display[:22] + "..."
-        
-        widgets['btn_articles'].configure(
-            text=articles_display,
-            command=lambda: self.open_articles_dropdown(real_idx)
-        )
-
-        # Payment
-        widgets['lbl_sum'].configure(text=f"{row['sum']} RUB")
-
-        # Status
-        processed_state = int(row.get('processed', 0))
-        
-        status_color = "red"
-        status_text = "✗"
-        hover_color = "darkred"
-
-        if processed_state == 2:
-            status_color = "green"
-            status_text = "✔"
-            hover_color = "darkgreen"
-        elif processed_state == 1:
-            status_color = "orange"
-            status_text = "?"
-            hover_color = "darkorange"
-        
-        widgets['btn_status'].configure(
-            text=status_text,
-            fg_color=status_color,
-            hover_color=hover_color,
-            command=lambda: self.toggle_processed(real_idx)
-        )
-
-    def prev_page(self):
-        if self.current_page > 0:
-            self.current_page -= 1
-            self.render_staff()
-
-    def next_page(self):
-        total_items = len(self.filtered_data)
-        total_pages = (total_items + self.page_size - 1) // self.page_size
-        if total_pages == 0: total_pages = 1
-        
-        if self.current_page < total_pages - 1:
-            self.current_page += 1
-            self.render_staff()
-
-    def copy_to_clipboard(self, value):
-        self.clipboard_clear()
-        self.clipboard_append(value)
-        self.update()
-
-    def open_filter(self):
-        popup = ctk.CTkToplevel(self)
-        popup.title("Фильтр")
-        popup.geometry("300x600")
-        popup.grab_set()
-
-        # --- Status Filter ---
-        ctk.CTkLabel(popup, text="Статусы:", font=("Arial", 14, "bold")).pack(pady=(10, 5))
-        
-        status_vars = {}
-        status_frame = ctk.CTkFrame(popup, fg_color="transparent")
-        status_frame.pack(fill="x", padx=20)
-
-        statuses = [
-            (0, "Не обработан (✗)", "red", "darkred"),
-            (1, "Вопрос (?)", "orange", "darkorange"),
-            (2, "Обработан (✔)", "green", "darkgreen")
-        ]
-
-        for code, text, color, hover in statuses:
-            is_checked = code in self.filter_statuses
-            var = ctk.BooleanVar(value=is_checked)
-            status_vars[code] = var
-            chk = ctk.CTkCheckBox(status_frame, text=text, variable=var, 
-                                  fg_color=color, hover_color=hover)
-            chk.pack(anchor="w", pady=2)
-
-        # --- Article Filter ---
-        ctk.CTkLabel(popup, text="Статьи (OR):", font=("Arial", 14, "bold")).pack(pady=(15, 5))
-        
-        article_vars = {}
-        scroll = ctk.CTkScrollableFrame(popup, height=200)
-        scroll.pack(fill="both", padx=10, pady=5, expand=True)
-
-        for code, label, _ in ARTICLES:
-            # If filter_articles is empty, everything is effectively "shown", 
-            # but for UI we default to unchecked to imply "Add to filter"
-            is_checked = code in self.filter_articles
-            var = ctk.BooleanVar(value=is_checked)
-            article_vars[code] = var
-            chk = ctk.CTkCheckBox(scroll, text=f"{code} ({label})", variable=var)
-            chk.pack(anchor="w", pady=2)
-
-        # --- Actions ---
-        def apply_filters():
-            # Update state
-            self.filter_statuses = [code for code, var in status_vars.items() if var.get()]
-            self.filter_articles = [code for code, var in article_vars.items() if var.get()]
-            
-            self.apply_filters_internal()
-            self.current_page = 0
-            self.render_staff()
-            popup.destroy()
-
-        def reset_filters():
-            # Reset UI vars
-            for code, var in status_vars.items():
-                var.set(True)
-            for code, var in article_vars.items():
-                var.set(False)
-
-        btn_frame = ctk.CTkFrame(popup, fg_color="transparent")
-        btn_frame.pack(fill="x", pady=10, padx=20)
-        
-        ctk.CTkButton(btn_frame, text="Применить", command=apply_filters, fg_color="green", hover_color="darkgreen").pack(side="left", expand=True, fill="x", padx=(0, 5))
-        ctk.CTkButton(btn_frame, text="Все", command=reset_filters, width=80).pack(side="right", padx=(5, 0))
-
-    def apply_filters_internal(self):
-        new_filtered = []
-        for row in self.data:
-            if int(row.get('processed', 0)) not in self.filter_statuses:
-                continue
-            if self.filter_articles:
-                has_match = any(art in row['articles'] for art in self.filter_articles)
-                if not has_match:
-                    continue
-            new_filtered.append(row)
-        self.filtered_data = new_filtered
-
-    def sort_staff(self, key, ascending):
-        def sort_key_wrapper(item):
-            val = item.get(key, "")
-            # Try to convert to number for numeric sorting, else string
+    def closeEvent(self, event):
+        if self.thread:
             try:
-                if key == 'rank':
-                    return float(val)
-                elif key == 'statik':
-                    return int(val) if val else 0
-                return val
-            except (ValueError, TypeError):
-                return str(val).lower()
+                if self.thread.isRunning():
+                    self.thread.quit()
+                    self.thread.wait()
+            except RuntimeError:
+                pass
+        event.accept()
 
-        # Sort both lists so the order is maintained even if filter changes
-        self.data.sort(key=sort_key_wrapper, reverse=not ascending)
-        self.filtered_data.sort(key=sort_key_wrapper, reverse=not ascending)
-        
-        self.current_page = 0 # Reset to first page on sort
-        self.render_staff()
-
-    def update_google_row(self, row_dict):
-        # Allow thread to call this
-        if not self.sync_mode or not self.worksheet:
-            return
-            
-        r = row_dict.get('gs_row_index')
-        if not r: return
-        
-        try:
-            articles_str = ", ".join(row_dict['articles'])
-            # Update range D:F (Articles, Sum, Status)
-            # D = 4, E = 5, F = 6
-            # We are updating D, E, F columns for row r
-            self.worksheet.update(range_name=f"D{r}:F{r}", values=[[articles_str, row_dict['sum'], row_dict['processed']]])
-        except Exception as e:
-            print(f"Update Row Error: {e}")
-
-    def refresh_google_data(self):
-        if not self.sync_mode or not self.worksheet:
-            return
-            
-        if self.is_loading:
-            return
-
-        def worker():
-            try:
-                raw_data = self.worksheet.get_all_values()
-                self.after(0, lambda: self._on_data_refreshed(raw_data))
-            except Exception as e:
-                print(f"Sync Refresh Error: {e}")
-
-        # Start thread
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_data_refreshed(self, raw_data):
-        if not raw_data:
-            self.data.clear()
-        else:
-            new_data = []
-            # Headers: Name (0), Static (1), Rank (2), Articles (3), Sum (4), Status (5)
-            rows = raw_data[1:] # Skip header
-            for i, row in enumerate(rows):
-                while len(row) < 6: row.append("")
-                
-                name = row[0]
-                statik = row[1]
-                rank = row[2]
-                
-                articles_str = row[3]
-                articles = [a.strip() for a in articles_str.split(',') if a.strip()]
-                
-                try: payment = int(row[4])
-                except: payment = 0
-                
-                try: processed = int(row[5])
-                except: processed = 0
-                
-                new_data.append({
-                    "name": name,
-                    "statik": statik,
-                    "rank": rank,
-                    "articles": articles,
-                    "sum": payment,
-                    "processed": processed,
-                    "gs_row_index": i + 2 
-                })
-            
-            self.data = new_data
-            
-        self.apply_filters_internal()
-        self.render_staff()
-
-    def start_auto_refresh(self):
-        self.stop_auto_refresh()
-        if self.sync_mode:
-            # First call immediately? Or just schedule
-            self.refresh_google_data()
-            # Refresh every 10000ms (10 seconds) - Increased as it is heavy
-            self.auto_refresh_job = self.after(10000, self.start_auto_refresh)
-
-    def stop_auto_refresh(self):
-        if self.auto_refresh_job:
-            self.after_cancel(self.auto_refresh_job)
-            self.auto_refresh_job = None
-
-    def open_articles_dropdown(self, idx):
-        # Update to use filtered_data instead of data
-        row = self.filtered_data[idx]
-        button = self.row_widgets[idx]["articles_btn"]
-
-        # Use Toplevel as a modal dialog
-        popup = ctk.CTkToplevel(self)
-        popup.title("Выбор статей")
-        
-        # Calculate position
-        x = button.winfo_rootx()
-        y = button.winfo_rooty() + button.winfo_height()
-        popup.geometry(f"250x300+{x}+{y}")
-        
-        popup.grab_set() 
-        popup.attributes("-topmost", True)
-        
-        container = ctk.CTkFrame(popup)
-        container.pack(fill="both", expand=True, padx=5, pady=5)
-
-        ctk.CTkLabel(container, text="Выберите статьи:", font=("Arial", 14, "bold")).pack(pady=5)
-        
-        scroll = ctk.CTkScrollableFrame(container)
-        scroll.pack(fill="both", expand=True, padx=2, pady=2)
-
-        vars = []
-        for code, label, price in ARTICLES:
-            is_checked = code in row["articles"]
-            var = ctk.BooleanVar(value=is_checked)
-            chk = ctk.CTkCheckBox(scroll, text=f"{code} - {price} RUB", variable=var)
-            chk.pack(anchor="w", pady=5, padx=5)
-            vars.append((code, var, price))
-
-        def apply_changes():
-            if not self.can_edit:
-                messagebox.showwarning("Доступ запрещен", "Редактирование запрещено.")
-                return
-
-            selected_articles = []
-            total_sum = 0
-            for code, var, price in vars:
-                if var.get():
-                    selected_articles.append(code)
-                    total_sum += price
-            
-            row["articles"] = selected_articles
-            row["sum"] = total_sum
-            
-            # Update UI immediately before sync
-            self.filtered_data[idx] = row
-            widgets = self.row_widgets.get(idx)
-            if widgets:
-                new_text = ", ".join(row['articles']) if row['articles'] else "Выбрать..."
-                # Handle text overflow if too many articles
-                if len(new_text) > 30: new_text = new_text[:27] + "..."
-
-                widgets["articles_btn"].configure(text=new_text)
-                widgets["sum_label"].configure(text=f"{row['sum']} RUB")
-
-            if self.sync_mode:
-                 threading.Thread(target=self.update_google_row, args=(row,), daemon=True).start()
-            
-            popup.destroy()
-        
-        apply_btn = ctk.CTkButton(container, text="Сохранить", command=apply_changes, fg_color="green", hover_color="darkgreen")
-        apply_btn.pack(pady=(10, 5), fill="x", padx=20)
+    def set_loading(self, show, message=""):
+        self.is_loading = show
+        self.loading_label.setText(message if show else "")
+        self.loading_label.setVisible(show)
