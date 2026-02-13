@@ -450,6 +450,15 @@ class MainWindow(QMainWindow):
             if name_item:
                 data_idx = name_item.data(Qt.ItemDataRole.UserRole)
                 self.toggle_processed(data_idx)
+        
+        # Copy Static ID (col 2) on single click as requested
+        if col == 2:
+            item = self.table.item(row, col)
+            if item:
+                QApplication.clipboard().setText(item.text())
+                # Optional: Show a small tooltip or status message that it was copied
+                self.loading_label.setText(f"Copied: {item.text()}")
+                QTimer.singleShot(2000, lambda: self.loading_label.setText("Connected" if self.sync_mode else ""))
 
     def on_cell_double_click(self, row, col):
         # Always try to get index from column 1 (Name)
