@@ -1,63 +1,124 @@
-import customtkinter as ctk
 import hashlib
-import gspread
-from tkinter import messagebox
-from config import FILES_PATH # Assuming user wants to keep paths configurable later or use defaults
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, 
+                             QMessageBox, QCheckBox, QDialog)
+from PyQt6.QtCore import Qt, pyqtSignal
+from google_service import GoogleService
 
-class LoginWindow(ctk.CTk):
+class LoginWindow(QWidget):
+    login_success = pyqtSignal(dict) # Signal to pass user data
+
     def __init__(self):
         super().__init__()
-        self.title("Вход в систему")
-        self.geometry("400x350")
+        self.setWindowTitle("Вход в систему")
+        self.google_service = GoogleService()
+        self.resize(400, 350)
         self.user_data = None
         
-        # UI элементы
-        ctk.CTkLabel(self, text="Вход в Employee Data", font=("Arial", 20, "bold")).pack(pady=(30, 20))
+        # Apple Dark Theme Stylesheet
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                font-family: 'Segoe UI', sans-serif;
+            }
+            QLineEdit {
+                background-color: #353535;
+                color: white;
+                border: 1px solid #555;
+                border-radius: 8px;
+                padding: 10px;
+                font-size: 14px;
+                selection-background-color: #2a82da;
+            }
+            QLineEdit:focus {
+                border: 1px solid #2a82da;
+                background-color: #404040;
+            }
+            QPushButton {
+                background-color: #2a82da;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: bold;
+                padding: 10px;
+            }
+            QPushButton:hover {
+                background-color: #3a92ea;
+            }
+            QPushButton:pressed {
+                background-color: #1a72ca;
+            }
+            QLabel#TitleLabel {
+                font-size: 24px;
+                font-weight: bold;
+                color: #ffffff;
+                margin-bottom: 20px;
+            }
+            QLabel#StatusLabel {
+                font-size: 12px;
+                margin-top: 10px;
+            }
+        """)
+
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(50, 50, 50, 50)
+        layout.setSpacing(20)
         
-        self.username_entry = ctk.CTkEntry(self, placeholder_text="Имя пользователя", width=250)
-        self.username_entry.pack(pady=10)
+        self.title_label = QLabel("Вход в Employee Data")
+        self.title_label.setObjectName("TitleLabel")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.title_label)
         
-        self.password_entry = ctk.CTkEntry(self, placeholder_text="Пароль", width=250, show="*")
-        self.password_entry.pack(pady=10)
+        self.username_input = QLineEdit()
+        self.username_input.setPlaceholderText("Имя пользователя")
+        self.username_input.setMinimumHeight(45)
+        layout.addWidget(self.username_input)
         
-        ctk.CTkButton(self, text="Войти", command=self.login, width=250, height=40).pack(pady=20)
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Пароль")
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setMinimumHeight(45)
+        layout.addWidget(self.password_input)
         
-        # Лейбл статуса
-        self.status_label = ctk.CTkLabel(self, text="", text_color="red")
-        self.status_label.pack(pady=5)
+        self.login_btn = QPushButton("Войти")
+        self.login_btn.setMinimumHeight(45)
+        self.login_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.login_btn.clicked.connect(self.login)
+        layout.addWidget(self.login_btn)
+        
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("StatusLabel")
+        self.status_label.setStyleSheet("color: #ff6b6b;") # Override color for status
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_label)
+        
+        layout.addStretch()
+        self.setLayout(layout)
 
     def login(self):
-        username = self.username_entry.get().strip()
-        password = self.password_entry.get().strip()
+        username = self.username_input.text().strip()
+        password = self.password_input.text().strip()
         
         if not username or not password:
-            self.status_label.configure(text="Введите логин и пароль")
+            self.status_label.setText("Введите логин и пароль")
             return
 
+        self.status_label.setText("Подключение...")
+        # Force UI update needed here normally, but single thread blocks anyway.
+        # We'll rely on fast auth or just blocking is fine for MVP.
+        
         try:
-            gc = gspread.service_account(filename='service_account.json')
-            
-            try:
-                sh = gc.open("Gov UT")
-            except gspread.SpreadsheetNotFound:
-                sh = gc.create("Gov UT")
-
-            try:
-                ws = sh.worksheet("Users")
-            except gspread.WorksheetNotFound:
-                ws = sh.add_worksheet(title="Users", rows=100, cols=5)
-                ws.append_row(["Username", "PasswordHash", "Role", "CanEdit", "CanUpload"])
-                default_hash = hashlib.sha256("admin".encode()).hexdigest()
-                ws.append_row(["admin", default_hash, "Admin", "1", "1"])
-            
-            users = ws.get_all_records()
+            users = self.google_service.get_users()
             input_hash = hashlib.sha256(password.encode()).hexdigest()
             
             found = False
             for user in users:
-                # Add default dict for missing keys to avoid key errors later
                 if str(user.get('Username')) == username and str(user.get('PasswordHash')) == input_hash:
-                    # Ensure defaults for boolean flags
+                    # Ensure defaults
                     user.setdefault('CanEdit', 0)
                     user.setdefault('CanUpload', 0)
                     user.setdefault('Role', 'User')
@@ -66,58 +127,73 @@ class LoginWindow(ctk.CTk):
                     break
             
             if found:
-                self.destroy()
+                self.login_success.emit(self.user_data)
+                self.close()
             else:
-                self.status_label.configure(text="Неверные данные")
+                self.status_label.setText("Неверные данные")
                 
         except Exception as e:
-            self.status_label.configure(text=f"Ошибка соединения: {e}")
+            self.status_label.setText(f"Ошибка соединения: {e}")
 
-class AdminPanel(ctk.CTkToplevel):
-    def __init__(self, parent):
+class AdminPanel(QDialog):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.title("Админ панель")
-        self.geometry("500x400")
-        
-        ctk.CTkLabel(self, text="Добавить пользователя", font=("Arial", 16, "bold")).pack(pady=10)
-        
-        self.new_user_entry = ctk.CTkEntry(self, placeholder_text="Логин")
-        self.new_user_entry.pack(pady=5)
-        
-        self.new_pass_entry = ctk.CTkEntry(self, placeholder_text="Пароль", show="*")
-        self.new_pass_entry.pack(pady=5)
-        
-        # Чекбоксы прав
-        self.chk_edit_var = ctk.BooleanVar()
-        ctk.CTkCheckBox(self, text="Может редактировать (CanEdit)", variable=self.chk_edit_var).pack(pady=5)
-        
-        self.chk_upload_var = ctk.BooleanVar()
-        ctk.CTkCheckBox(self, text="Может загружать/синхронизировать (CanUpload)", variable=self.chk_upload_var).pack(pady=5)
-        
-        self.chk_admin_var = ctk.BooleanVar()
-        ctk.CTkCheckBox(self, text="Администратор (Admin)", variable=self.chk_admin_var).pack(pady=5)
-        
-        ctk.CTkButton(self, text="Создать пользователя", command=self.create_user).pack(pady=15)
-        
-    def create_user(self):
-        login = self.new_user_entry.get()
-        pwd = self.new_pass_entry.get()
-        
-        if not login or not pwd:
-            return
+        self.setWindowTitle("Админ панель")
+        self.google_service = GoogleService()
+        self.resize(500, 400)
+        self.init_ui()
 
+    def init_ui(self):
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        title = QLabel("Добавить пользователя")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        layout.addWidget(title)
+        
+        self.new_user_entry = QLineEdit()
+        self.new_user_entry.setPlaceholderText("Логин")
+        layout.addWidget(self.new_user_entry)
+        
+        self.new_pass_entry = QLineEdit()
+        self.new_pass_entry.setPlaceholderText("Пароль")
+        self.new_pass_entry.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self.new_pass_entry)
+        
+        self.chk_edit = QCheckBox("Право на редактирование и синхронизацию")
+        layout.addWidget(self.chk_edit)
+        
+        self.chk_upload = QCheckBox("Право на создание новой таблицы")
+        layout.addWidget(self.chk_upload)
+        
+        self.chk_admin = QCheckBox("Право на администрирование")
+        layout.addWidget(self.chk_admin)
+        
+        btn = QPushButton("Создать пользователя")
+        btn.clicked.connect(self.create_user)
+        layout.addWidget(btn)
+        
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def create_user(self):
+        username = self.new_user_entry.text().strip()
+        password = self.new_pass_entry.text().strip()
+        
+        if not username or not password:
+            QMessageBox.warning(self, "Ошибка", "Заполните логин и пароль")
+            return
+            
         try:
-            gc = gspread.service_account(filename='service_account.json')
-            sh = gc.open("Gov UT")
-            ws = sh.worksheet("Users")
+            role = "Admin" if self.chk_admin.isChecked() else "User"
+            can_edit = "1" if self.chk_edit.isChecked() else "0"
+            can_upload = "1" if self.chk_upload.isChecked() else "0"
             
-            pwd_hash = hashlib.sha256(pwd.encode()).hexdigest()
-            role = "Admin" if self.chk_admin_var.get() else "User"
-            can_edit = 1 if self.chk_edit_var.get() else 0
-            can_upload = 1 if self.chk_upload_var.get() else 0
+            self.google_service.create_user(username, password, role, can_edit, can_upload)
             
-            ws.append_row([login, pwd_hash, role, can_edit, can_upload])
-            messagebox.showinfo("Успех", f"Пользователь {login} создан")
-            self.destroy()
+            QMessageBox.information(self, "Успех", f"Пользователь {username} создан")
+            self.accept()
+            
         except Exception as e:
-            messagebox.showerror("Ошибка", str(e))
+            QMessageBox.critical(self, "Ошибка", str(e))
