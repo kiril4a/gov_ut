@@ -4,12 +4,14 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QPushButton, QTableWidget, QTableWidgetItem, 
                              QHeaderView, QAbstractItemView, QMessageBox, QFileDialog, 
                              QDialog, QCheckBox, QComboBox, QLineEdit, QScrollArea, QFrame,
-                             QInputDialog)
-from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, pyqtSlot
-from PyQt6.QtGui import QAction, QColor, QPalette, QPixmap, QIcon
+                             QInputDialog, QSpinBox)
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, pyqtSlot, QTimer
+from PyQt6.QtGui import QAction, QColor, QPalette, QPixmap, QIcon, QCursor
 from config import ARTICLES
 from auth import AdminPanel
 from google_service import GoogleService
+from utils import get_resource_path
+import csv
 
 # Worker for threaded tasks
 class Worker(QObject):
@@ -35,26 +37,148 @@ class ArticlesDialog(QDialog):
     def __init__(self, current_articles, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Выберите статьи")
-        self.resize(350, 500)
-        self.selected_articles = set(current_articles)
+        self.resize(450, 600)
+        
+        # Parse current articles into count map
+        # Expected format in list: ["6.1", "6.1", "7.2"]
+        self.article_counts = {}
+        for art in current_articles:
+            self.article_counts[art] = self.article_counts.get(art, 0) + 1
+            
+        self.controls = {} # Map code -> (checkbox, spinbox, container_widget)
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
         
+        # Style helper for rounded spinbox elements
+        # QSpinBox::up-button and ::down-button can be used to style the arrows.
+        # But QSpinBox native styling is tricky.
+        # Let's apply a general stylesheet for the dialog.
+        self.setStyleSheet("""
+            QWidget { 
+                background-color: #353535; 
+                color: white; 
+                font-family: "Segoe UI", sans-serif; 
+            }
+            QCheckBox { 
+                spacing: 8px; 
+                font-size: 14px; 
+            }
+            QCheckBox::indicator { 
+                width: 18px; 
+                height: 18px; 
+                border-radius: 4px; 
+                background: white; 
+                border: 1px solid #ccc; 
+            }
+            QCheckBox::indicator:unchecked { background-color: white; }
+            QCheckBox::indicator:checked { background-color: #2ecc71; border: 1px solid #2ecc71; image: none; }
+            
+            QSpinBox {
+                background-color: #444; 
+                color: white; 
+                border: 1px solid #555; 
+                border-radius: 8px; /* Rounded corners for the field */
+                padding: 4px;
+                font-weight: bold;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background-color: #555;
+                /* We can't easily make them perfectly rounded separate buttons via CSS alone on standard QSpinBox without subcontrol-origin hacking, 
+                   but we can round the corners that touch the edge or just keep them inside. */
+                border-radius: 4px;
+                margin: 1px;
+                width: 16px; 
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background-color: #666;
+            }
+            QSpinBox:disabled {
+                background-color: #333;
+                color: #777;
+                border: 1px solid #333;
+            }
+            QPushButton {
+                 border-radius: 8px;
+            }
+            QLineEdit { 
+                padding: 8px; 
+                border-radius: 15px; 
+                border: 1px solid #555; 
+                background-color: #252525; 
+                color: white; 
+            }
+        """)
+
+        # Search Filter
+        search_layout = QHBoxLayout()
+        lbl_search = QLabel("🔍")
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Поиск статьи...")
+        self.search_input.textChanged.connect(self.filter_articles)
+        search_layout.addWidget(lbl_search)
+        search_layout.addWidget(self.search_input)
+        layout.addLayout(search_layout)
+        
+        # Scroll Area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         widget = QWidget()
         self.vbox = QVBoxLayout(widget)
+        self.vbox.setSpacing(5)
         
-        self.checks = {}
+        from datetime import datetime, timedelta
+
+        def get_expiration_date(price):
+            base_date = datetime.now()
+            if price == 25000:
+                delta = 7
+            elif price == 50000:
+                delta = 21
+            elif price == 75000:
+                delta = 45
+            elif price == 100000:
+                return "Бессрочно"
+            else:
+                return "Неизвестно"
+                
+            expiry_date = base_date - timedelta(days=delta)
+            return expiry_date.strftime("%d.%m.%Y")
+
         for code, label, cost in ARTICLES:
-            text = f"{code} - {label} ({cost} RUB)"
+            expiry_str = get_expiration_date(cost)
+            text = f"{code} - {label} ({expiry_str})"
+            
+            # Container for each article row
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            
+            # Checkbox
             chk = QCheckBox(text)
-            if code in self.selected_articles:
+            current_count = self.article_counts.get(code, 0)
+            if current_count > 0:
                 chk.setChecked(True)
-            self.vbox.addWidget(chk)
-            self.checks[code] = chk
+            
+            # Spinbox logic
+            spin = QSpinBox()
+            spin.setRange(1, 99)
+            spin.setValue(max(1, current_count))
+            spin.setFixedWidth(60) # Slightly wider for padding
+            # spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.PlusMinus) # Optional style change
+            spin.setEnabled(chk.isChecked())
+            
+            # Toggle spinbox with checkbox
+            chk.toggled.connect(spin.setEnabled)
+            
+            row_layout.addWidget(chk, stretch=1)
+            row_layout.addWidget(spin)
+            
+            self.vbox.addWidget(row_widget)
+            
+            # Store references for filtering and result gathering
+            self.controls[code] = (chk, spin, row_widget, text.lower())
             
         self.vbox.addStretch()
         scroll.setWidget(widget)
@@ -65,18 +189,115 @@ class ArticlesDialog(QDialog):
         btn_save.setStyleSheet("background-color: #2e86de; color: white; padding: 8px;")
         layout.addWidget(btn_save)
 
+    def filter_articles(self, text):
+        search_text = text.lower()
+        for code, (chk, spin, widget, label_text) in self.controls.items():
+            visible = search_text in label_text
+            widget.setVisible(visible)
+
     def get_selected(self):
-        return [code for code, chk in self.checks.items() if chk.isChecked()]
+        result = []
+        for code, (chk, spin, _, _) in self.controls.items():
+            if chk.isChecked():
+                # Add duplicate code entries according to spinbox value
+                for _ in range(spin.value()):
+                    result.append(code)
+        return result
+
+class StatusPicker(QDialog):
+    def __init__(self, parent=None, callback=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.callback = callback
+        self.init_ui()
+        
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        container = QFrame()
+        container.setObjectName("container")
+        container.setStyleSheet("""
+            QFrame#container {
+                background-color: #353535; 
+                border: 1px solid #555; 
+                border-radius: 6px;
+            }
+        """)
+        main_layout.addWidget(container)
+        
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(5)
+        
+        def create_btn(text, bg, fg, val):
+            btn = QPushButton(text)
+            btn.setFixedSize(30, 30)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            # Override global QPushButton styles
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {bg};
+                    color: {fg};
+                    border: none;
+                    border-radius: 4px;
+                    font-size: 16px;
+                    font-weight: bold;
+                    min-width: 30px;
+                    padding: 0px;
+                }}
+                QPushButton:hover {{
+                    background-color: {bg}; 
+                    border: 1px solid white;
+                }}
+            """)
+            btn.clicked.connect(lambda: self.on_click(val))
+            layout.addWidget(btn)
+
+        # Cross (Red) - 0
+        create_btn("✗", "#ffcccc", "#990000", 0)
+        # Question (Orange) - 1
+        create_btn("?", "#fff4cc", "#cc8800", 1)  
+        # Check (Green) - 2
+        create_btn("✔", "#ccffcc", "#006600", 2)
+        
+    def on_click(self, val):
+        if self.callback:
+            self.callback(val)
+        self.close()
 
 class MainWindow(QMainWindow):
     def __init__(self, user_data):
         super().__init__()
         self.user_data = user_data
         self.is_admin = user_data.get('Role') == 'Admin'
+        self.can_edit = self.is_admin or user_data.get('Role') == 'Editor' # Editors can edit too?
+        # Assuming permissions are handled by role check
         
-        # Service instance
+        # State
+        self.data = []
+        self.filtered_data = []
+        self.current_page = 1
+        self.items_per_page = 50
+        self.is_loading = False
+        self.worksheet = None # GSpread worksheet object
+        self.sync_mode = False # True if connected to Google Sheet
+        self.filter_statuses = [] # Empty means all
+        self.filter_articles = []
+        
+        # Sorting state
+        self.current_sort_key = None
+        self.current_sort_asc = True
+        
         self.google_service = GoogleService()
         
+        self.setWindowTitle("МВД Helper v2.0")
+        self.resize(1200, 800)
+        
+        self.current_sort_key = None
+        self.current_sort_asc = True
+
         # Permissions
         if self.is_admin:
             self.can_edit = True
@@ -89,13 +310,10 @@ class MainWindow(QMainWindow):
             cu_val = str(user_data.get('CanUpload', '0')).lower()
             self.can_upload = cu_val in ('1', 'true', 'yes', 'on')
             
-         # If the user has rights to edit and sync (CanEdit), 
-         # they should also be able to open an existing Google Sheet.
-        if self.can_edit:
-             pass 
-
+        # Default view permission is implicit
+            
         self.setWindowTitle(f"Employee Data - {user_data.get('Username')} ({user_data.get('Role')})")
-        self.setWindowIcon(QIcon("image.png")) # Set application icon
+        self.setWindowIcon(QIcon(get_resource_path("image.png"))) # Set application icon
         self.resize(1200, 800)
         
         # Initialize Data
@@ -103,8 +321,10 @@ class MainWindow(QMainWindow):
         self.filtered_data = []
         self.filter_statuses = [0, 1, 2]
         self.filter_articles = []
+        self.search_text = ""
         self.current_page = 1
         self.items_per_page = 10
+        self.article_map = {code: label for code, label, _ in ARTICLES}
         
         self.sync_mode = False 
         self.worksheet = None
@@ -175,6 +395,7 @@ class MainWindow(QMainWindow):
             QPushButton { 
                 background-color: #2a82da; color: white; border: none; 
                 border-radius: 8px; padding: 10px; min-width: 100px; font-weight: bold; 
+                outline: none; /* Remove dotted focus border */
             }
             QPushButton:hover { background-color: #3a92ea; }
             QPushButton:pressed { background-color: #1a72ca; }
@@ -187,7 +408,8 @@ class MainWindow(QMainWindow):
             }
             
             /* Checkboxes */
-            QCheckBox { spacing: 8px; font-size: 14px; }
+            QCheckBox { spacing: 8px; font-size: 14px; outline: none; }
+            QCheckBox:focus { outline: none; }
             QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; background: white; border: 1px solid #ccc; }
             QCheckBox::indicator:unchecked { background-color: white; }
             QCheckBox::indicator:checked { background-color: #2ecc71; border: 1px solid #2ecc71; image: none; }
@@ -196,6 +418,7 @@ class MainWindow(QMainWindow):
             
             /* Remove dotted focus rectangle */
             QTableWidget:focus { outline: none; }
+            QPushButton:focus { outline: none; border: none; }
         """)
 
     def init_ui(self):
@@ -207,19 +430,31 @@ class MainWindow(QMainWindow):
 
         # --- Header --- 
         header_layout = QHBoxLayout()
-        
+        header_layout.setAlignment(Qt.AlignmentFlag.AlignLeft) 
+
         # Logo Image
         logo_label = QLabel()
-        pixmap = QPixmap("image.png")
+        pixmap = QPixmap(get_resource_path("image.png"))
         if not pixmap.isNull():
-            pixmap = pixmap.scaled(50, 50, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            # Increased size even more to match "Logo bigger" + "See photo" request
+            pixmap = pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             logo_label.setPixmap(pixmap)
-            logo_label.setFixedSize(50, 50)
+            logo_label.setFixedSize(100, 100)
             header_layout.addWidget(logo_label)
         
+        # Title wrapper to center it vertically next to large logo
+        title_container = QWidget()
+        title_layout = QVBoxLayout(title_container) 
+        title_layout.setContentsMargins(0,0,0,0)
+        title_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
         title = QLabel("Employee Data")
-        title.setStyleSheet("font-size: 28px; font-weight: bold; color: #4facfe; margin-left: 10px;")
-        header_layout.addWidget(title)
+        title.setStyleSheet("font-size: 32px; font-weight: bold; color: #4facfe; margin-left: 20px;") # Increased margin-left to separate from logo
+        title_layout.addWidget(title)
+        
+        # Reverted: Search Bar moved back to Controls layout
+        
+        header_layout.addWidget(title_container)
         
         # --- Stats Blocks ---
         self.stats_layout = QHBoxLayout()
@@ -263,24 +498,46 @@ class MainWindow(QMainWindow):
         
         header_layout.addStretch()
         
+        # Right Side Buttons Container
+        right_btn_layout = QVBoxLayout()
+        right_btn_layout.setSpacing(5)
+        # Changed alignment to ensure they don't jump around
+        right_btn_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+
+        # Settings
         settings_btn = QPushButton("⚙ Настройки")
         settings_btn.clicked.connect(self.open_settings)
-        header_layout.addWidget(settings_btn)
+        # settings_btn.setStyleSheet("margin: 0px;")
+        right_btn_layout.addWidget(settings_btn)
         
+        # Admin
         if self.is_admin:
             admin_btn = QPushButton("🛡 Админ панель")
             admin_btn.setStyleSheet("background-color: #d63031; color: white; border: none; border-radius: 8px; padding: 10px;")
             admin_btn.clicked.connect(self.open_admin_panel)
-            header_layout.addWidget(admin_btn)
+            right_btn_layout.addWidget(admin_btn)
             
         # User Info
         user_text = f"{self.user_data.get('Username')} ({self.user_data.get('Role')})"
         self.user_info_label = QLabel(user_text)
-        self.user_info_label.setStyleSheet("font-weight: bold; padding: 8px; border: 1px solid #555; border-radius: 8px; background: #444;")
-        header_layout.addWidget(self.user_info_label)
+        self.user_info_label.setStyleSheet("font-weight: bold; padding: 5px; border: 1px solid #555; border-radius: 8px; background: #444; color: #ddd; font-size: 12px;")
+        self.user_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_btn_layout.addWidget(self.user_info_label)
+
+        header_layout.addLayout(right_btn_layout)
+        
+        # Google Status Label - kept on the far right or below, fixed width if possible to avoid jumping
+        # Moved it to a vertical layout with the buttons or keep it separate?
+        # User said "прикрепить левее ибо справа появляеться статус гугла и оно скачет туда сюда"
+        # So the status label should be to the RIGHT of the buttons, and buttons should be anchored left of it?
+        # Currently: header -> [Logo] [Stats] [Stretch] [Buttons] [Status]
+        # If [Status] changes text, [Buttons] might move if there is no fixed size.
+        # Let's give status label a fixed width or put it in a separate container.
         
         self.loading_label = QLabel("")
         self.loading_label.setStyleSheet("font-style: italic; color: #f1c40f;")
+        self.loading_label.setFixedWidth(150) # Fixed width to prevent jumping
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header_layout.addWidget(self.loading_label)
 
         main_layout.addLayout(header_layout)
@@ -288,14 +545,35 @@ class MainWindow(QMainWindow):
         # --- Controls --- 
         controls_layout = QHBoxLayout()
         
-        lbl_sort = QLabel("Сортировка:")
-        lbl_sort.setStyleSheet("font-weight: bold; font-size: 16px;")
-        controls_layout.addWidget(lbl_sort)
+        # Search Bar moved back here as requested
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Поиск (через запятую)...")
+        # Kept rounded corners and styling
+        self.search_input.setStyleSheet("""
+            QLineEdit { 
+                padding: 8px; 
+                border-radius: 15px; 
+                border: 1px solid #555; 
+                background-color: #252525; 
+                color: white; 
+                font-size: 14px;
+                min-width: 250px;
+            }
+            QLineEdit:focus { border: 1px solid #4facfe; }
+        """)
+        self.search_input.textChanged.connect(self.on_search_changed)
+        controls_layout.addWidget(self.search_input)
         
+        controls_layout.addStretch()
+
         filter_btn = QPushButton("🌪 Фильтр")
         filter_btn.clicked.connect(self.open_filter)
         controls_layout.addWidget(filter_btn)
         
+        lbl_sort = QLabel("Сортировка:")
+        lbl_sort.setStyleSheet("font-weight: bold; font-size: 16px; margin-left: 10px;")
+        controls_layout.addWidget(lbl_sort)
+
         def create_sort_btn(text, key, asc):
             btn = QPushButton(text)
             btn.clicked.connect(lambda: self.sort_staff(key, asc))
@@ -306,7 +584,6 @@ class MainWindow(QMainWindow):
         create_sort_btn("Ранг ↑", 'rank', True)
         create_sort_btn("Ранг ↓", 'rank', False)
         
-        controls_layout.addStretch()
         main_layout.addLayout(controls_layout)
 
         # --- Table --- 
@@ -362,6 +639,10 @@ class MainWindow(QMainWindow):
         pagination_layout.addStretch()
         main_layout.addLayout(pagination_layout)
 
+    def on_search_changed(self, text):
+        self.search_text = text
+        self.apply_filters()
+
     def set_loading(self, show, message=""):
         self.is_loading = show
         if show:
@@ -387,7 +668,23 @@ class MainWindow(QMainWindow):
             name_item = self.table.item(row, 1) # Name is now at col 1
             if name_item:
                 data_idx = name_item.data(Qt.ItemDataRole.UserRole)
-                self.toggle_processed(data_idx)
+                # Show popup menu for status
+                if not self.can_edit: return
+                
+                picker = StatusPicker(parent=self, callback=lambda s: self.update_status(data_idx, s))
+                # Center popup on mouse cursor
+                cursor_pos = QCursor.pos()
+                picker.move(cursor_pos.x() - picker.width() // 2, cursor_pos.y() - picker.height() // 2)
+                picker.exec()
+        
+        # Copy Static ID (col 2) on single click as requested
+        if col == 2:
+            item = self.table.item(row, col)
+            if item:
+                QApplication.clipboard().setText(item.text())
+                # Optional: Show a small tooltip or status message that it was copied
+                self.loading_label.setText(f"Copied: {item.text()}")
+                QTimer.singleShot(2000, lambda: self.loading_label.setText("Connected" if self.sync_mode else ""))
 
     def on_cell_double_click(self, row, col):
         # Always try to get index from column 1 (Name)
@@ -464,7 +761,7 @@ class MainWindow(QMainWindow):
                 "rank": rank,
                 "articles": articles,
                 "sum": s_sum if s_sum else "0",
-                "processed": int(proc) if str(proc).isdigit() else 0
+                "processed": int(proc) if str(proc).isdigit() else 1
             })
             
         self.data = new_data
@@ -472,25 +769,33 @@ class MainWindow(QMainWindow):
         self.set_loading(False)
 
     def update_google_row(self, row_data):
-        if not self.worksheet: return
+        """Worker function: Updates row then fetches fresh data."""
+        if not self.worksheet: return []
         
         art_str = ", ".join(row_data['articles'])
         self.google_service.update_row_data(self.worksheet, row_data['name'], art_str, row_data['sum'], row_data['processed'])
+        
+        # Return fresh data for the UI thread to process
+        return self.google_service.fetch_all_values(self.worksheet)
 
-    def toggle_processed(self, idx):
+    def update_status(self, idx, new_state):
         if not self.can_edit: return
         
-        if idx >= len(self.filtered_data): return
+        if idx >= len(self.filtered_data):
+            return
         
         row = self.filtered_data[idx]
         current_state = int(row['processed'])
-        new_state = (current_state + 1) % 3
-        row['processed'] = new_state
         
+        if current_state == new_state:
+            return
+
+        row['processed'] = new_state
         self.render_staff() 
 
         if self.sync_mode:
-            self.run_threaded(self.update_google_row, row)
+            # We pass _on_google_data_fetched as the callback to handle the fresh data
+            self.run_threaded(self.update_google_row, row, on_result=self._on_google_data_fetched)
 
     def open_articles_dialog(self, idx):
         if not self.can_edit: return
@@ -498,21 +803,31 @@ class MainWindow(QMainWindow):
         
         row = self.filtered_data[idx]
         
-        dlg = ArticlesDialog(row['articles'], self)
+        original_sum = float(row.get('sum', 0))
+        dlg = ArticlesDialog(row.get('articles', []), self)
+        
         if dlg.exec():
             new_selection = dlg.get_selected()
             row['articles'] = new_selection
             
+            # Calculate total sum allowing duplicates
             total = 0
-            for code, _, cost in ARTICLES:
-                if code in new_selection:
-                    total += cost
-            row['sum'] = total
+            for code in new_selection:
+                # Find the article in global ARTICLES list
+                article = next((a for a in ARTICLES if a[0] == code), None)
+                if article:
+                    total += float(article[2])
             
+            # Use format to remove .0 if integer
+            if total.is_integer():
+                row['sum'] = str(int(total))
+            else:
+                row['sum'] = str(total)
+
             self.render_staff()
             
             if self.sync_mode:
-                self.run_threaded(self.update_google_row, row)
+                 self.run_threaded(self.update_google_row, row, on_result=self._on_google_data_fetched)
 
     def render_staff(self):
         # Update Stats
@@ -664,14 +979,24 @@ class MainWindow(QMainWindow):
         # Also setting background color to lighter gray for rows as requested.
 
     def sort_staff(self, key, ascending=True):
+        self.current_sort_key = key
+        self.current_sort_asc = ascending
+
         def sort_key(row):
             val = row.get(key, "")
+            
             if key == 'rank':
-                # Try to convert to int for proper numeric sorting if possible
-                try:
+                val = str(val).strip()
+                if val.isdigit():
                     return int(val)
-                except ValueError:
-                    return str(val).lower()
+                return val.lower()
+                
+            if key == 'sum':
+                 try:
+                    return float(val)
+                 except ValueError:
+                    return 0
+            
             return str(val).lower()
 
         self.filtered_data.sort(key=sort_key, reverse=not ascending)
@@ -701,13 +1026,18 @@ class MainWindow(QMainWindow):
         # Settings Dialog
         dialog = QDialog(self)
         dialog.setWindowTitle("Настройки")
-        dialog.resize(300, 150)
+        dialog.resize(350, 250) # Increased size
         
         layout = QVBoxLayout(dialog)
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
         
-        btn_local = QPushButton("📂 Создать из файла (.txt)")
+        btn_local = QPushButton("📂 Импорт из файла (.txt)")
+        # Check permissions for import/upload
+        if not self.can_upload:
+            btn_local.setEnabled(False)
+            btn_local.setToolTip("Нет прав на загрузку")
+            
         btn_local.clicked.connect(lambda: [dialog.close(), self.load_file()])
         layout.addWidget(btn_local)
         
@@ -715,7 +1045,124 @@ class MainWindow(QMainWindow):
         btn_google.clicked.connect(lambda: [dialog.close(), self.connect_google_dialog()])
         layout.addWidget(btn_google)
         
+        # Export Button
+        btn_export = QPushButton("💾 Экспорт данных")
+        btn_export.clicked.connect(lambda: [dialog.close(), self.open_export_dialog()])
+        layout.addWidget(btn_export)
+        
         dialog.exec()
+        
+    def open_export_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Экспорт")
+        dialog.resize(400, 400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # --- Export Options Filter ---
+        group = QFrame()
+        group.setStyleSheet("background-color: #404040; border-radius: 5px; padding: 10px;")
+        g_layout = QVBoxLayout(group)
+        g_layout.addWidget(QLabel("<b>Настройки экспорта (что включить):</b>"))
+        
+        chk_header = QCheckBox("Заголовки столбцов")
+        chk_header.setChecked(True)
+        g_layout.addWidget(chk_header)
+        
+        chk_export_all = QCheckBox("Экспортировать ВСЕ (игнорировать фильтр)")
+        chk_export_all.setChecked(False)
+        g_layout.addWidget(chk_export_all)
+        
+        layout.addWidget(group)
+        # -----------------------------
+
+        lbl = QLabel("Выберите формат экспорта:")
+        layout.addWidget(lbl)
+        
+        # Helper to safely retrieve values before closing
+        def do_export(method):
+            inc_h = chk_header.isChecked()
+            exp_all = chk_export_all.isChecked()
+            
+            dialog.close()
+            # Defer execution to let dialog close properly and event loop settle
+            QTimer.singleShot(100, lambda: method(inc_h, exp_all))
+
+        # Options
+        btn_xls = QPushButton("Excel / CSV (.csv)")
+        btn_xls.clicked.connect(lambda: do_export(self.export_to_csv))
+        layout.addWidget(btn_xls)
+        
+        btn_txt = QPushButton("Текстовый файл (.txt)")
+        btn_txt.clicked.connect(lambda: do_export(self.export_to_txt))
+        layout.addWidget(btn_txt)
+        
+        btn_gsheet = QPushButton("Новая Google Таблица")
+        # Check permission for creating new sheet
+        if not self.can_upload:
+             btn_gsheet.setEnabled(False)
+             btn_gsheet.setText("Новая Google Таблица (Нет прав)")
+             
+        btn_gsheet.clicked.connect(lambda: do_export(self.export_to_google))
+        layout.addWidget(btn_gsheet)
+        
+        dialog.exec()
+
+    def export_to_csv(self, include_header, export_all):
+        fname, _ = QFileDialog.getSaveFileName(self, "Сохранить как CSV", "", "CSV Files (*.csv)")
+        if not fname: return
+        
+        data_source = self.data if export_all else self.filtered_data
+        
+        try:
+            with open(fname, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f, delimiter=';') 
+                if include_header:
+                    writer.writerow(["Имя", "Статик", "Ранг", "Статьи", "Сумма", "Статус"])
+                
+                for row in data_source:
+                    status_str = "Не обработан"
+                    if row['processed'] == 1: status_str = "Вопрос"
+                    elif row['processed'] == 2: status_str = "Обработан"
+                    
+                    writer.writerow([
+                        row['name'],
+                        row['statik'],
+                        row['rank'],
+                        ",".join(row['articles']),
+                        row['sum'],
+                        status_str
+                    ])
+            QMessageBox.information(self, "Успех", "Данные успешно экспортированы в CSV!")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+
+    def export_to_txt(self, include_header, export_all):
+        fname, _ = QFileDialog.getSaveFileName(self, "Сохранить как TXT", "", "Text Files (*.txt)")
+        if not fname: return
+        
+        data_source = self.data if export_all else self.filtered_data
+        
+        try:
+            with open(fname, 'w', encoding='utf-8') as f:
+                if include_header:
+                    f.write(f"{'Имя':<30} | {'Статик':<10} | {'Ранг':<15} | {'Сумма':<10} | {'Статьи'}\n")
+                    f.write("-" * 100 + "\n")
+                
+                for row in data_source:
+                    articles = ",".join(row['articles'])
+                    f.write(f"{row['name']:<30} | {str(row['statik']):<10} | {str(row['rank']):<15} | {str(row['sum']):<10} | {articles}\n")
+            QMessageBox.information(self, "Успех", "Данные успешно экспортированы в TXT!")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+            
+    def export_to_google(self, include_header, export_all):
+        text, ok = QInputDialog.getText(self, "Новая таблица", "Введите название нового листа:")
+        if not ok or not text: return
+        
+        data_source = self.data if export_all else self.filtered_data
+        self.set_loading(True, "Экспорт в Google...")
+        self.run_threaded(self.google_service.upload_sheet_data, text, data_source, include_header=include_header, on_result=self._on_upload_complete)
     
     def connect_google_dialog(self):
         text, ok = QInputDialog.getText(self, "Название листа", "Введите название листа для синхронизации:")
@@ -749,8 +1196,17 @@ class MainWindow(QMainWindow):
         scroll_layout = QVBoxLayout(scroll_widget)
         article_checks = {}
         
-        # Sort articles for better list
-        sorted_articles = sorted(ARTICLES, key=lambda x: x[0])
+        # Sort articles using natural sort order (so 6.1 comes before 10.1)
+        def natural_sort_key(item):
+            # item is (code, label, cost)
+            # Split code by dot and convert parts to integers
+            try:
+                parts = [int(p) for p in item[0].split('.')]
+                return parts
+            except ValueError:
+                return [0]
+
+        sorted_articles = sorted(ARTICLES, key=natural_sort_key)
         
         for code, label, _ in sorted_articles:
             chk = QCheckBox(f"{code} ({label})")
@@ -787,9 +1243,39 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def apply_filters(self):
-        self.filtered_data = [row for row in self.data if row['processed'] in self.filter_statuses and 
-                              (not self.filter_articles or any(a in self.filter_articles for a in row['articles']))]
-        self.render_staff()
+        text = self.search_text.lower()
+        res = []
+        
+        for r in self.data:
+            # Check search text
+            match_search = (text in str(r['name']).lower() or 
+                            text in str(r['statik']).lower() or 
+                            text in str(r['rank']).lower())
+            
+            # Check status filter
+            match_status = True
+            if self.filter_statuses:
+                match_status = r['processed'] in self.filter_statuses
+                
+            # Check article filter 
+            match_articles = True
+            if self.filter_articles:
+                # If any of the row's articles match any of the filter articles
+                # Or must match ALL? Usually "any".
+                has_any = any(art in self.filter_articles for art in r['articles'])
+                if not has_any:
+                    match_articles = False
+            
+            if match_search and match_status and match_articles:
+                res.append(r)
+                
+        self.filtered_data = res
+        self.current_page = 1
+        
+        if self.current_sort_key:
+            self.sort_staff(self.current_sort_key, self.current_sort_asc)
+        else:
+            self.render_staff()
 
     def load_file(self):
         if not self.can_upload:
@@ -823,7 +1309,7 @@ class MainWindow(QMainWindow):
                         "rank": rank,
                         "articles": [],
                         "sum": 0,
-                        "processed": 0 
+                        "processed": 1 
                     })
             self.data = new_data
             self.filtered_data = list(self.data)
@@ -837,11 +1323,6 @@ class MainWindow(QMainWindow):
             self.set_loading(False)
     
     def load_from_google(self, sheet_title):
-        # Allow if user has edit rights (to sync) OR upload rights (to create/sync)
-        if not self.can_edit and not self.can_upload:
-            QMessageBox.warning(self, "Error", "No rights to sync")
-            return
-        
         self.set_loading(True, "Connecting...")
         
         self.run_threaded(self.google_service.connect_worksheet, sheet_title, on_result=self._on_google_connected)
@@ -860,3 +1341,7 @@ class MainWindow(QMainWindow):
         self.is_loading = show
         self.loading_label.setText(message if show else "")
         self.loading_label.setVisible(show)
+
+    def on_search_changed(self, text):
+        self.search_text = text.lower()
+        self.apply_filters()

@@ -2,7 +2,9 @@ import hashlib
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, 
                              QMessageBox, QCheckBox, QDialog)
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QIcon
 from google_service import GoogleService
+from utils import get_resource_path
 
 class LoginWindow(QWidget):
     login_success = pyqtSignal(dict) # Signal to pass user data
@@ -10,6 +12,7 @@ class LoginWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Вход в систему")
+        self.setWindowIcon(QIcon(get_resource_path("image.png")))
         self.google_service = GoogleService()
         self.resize(400, 350)
         self.user_data = None

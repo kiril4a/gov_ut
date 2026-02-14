@@ -1,9 +1,10 @@
 import gspread
 import hashlib
+from utils import get_resource_path
 
 class GoogleService:
     def __init__(self, key_file='service_account.json', spread_name="Gov UT"):
-        self.key_file = key_file
+        self.key_file = get_resource_path(key_file)
         self.spread_name = spread_name
         self.gc = None
         self.sh = None
@@ -59,38 +60,46 @@ class GoogleService:
         return worksheet.get_all_values()
 
     def update_row_data(self, worksheet, name, articles_str, sum_val, processed_val):
-        """Updates a row by name."""
+        """Updates a row by name using optimized batch update."""
         cell = worksheet.find(name)
         if cell:
-            worksheet.update_cell(cell.row, 4, articles_str)
-            worksheet.update_cell(cell.row, 5, sum_val)
-            worksheet.update_cell(cell.row, 6, processed_val)
+            # Prepare the range (Columns 4, 5, 6 -> D, E, F)
+            # Example range: "D5:F5"
+            range_str = f"D{cell.row}:F{cell.row}"
+            # Update the range in one API call
+            worksheet.update(range_name=range_str, values=[[articles_str, sum_val, processed_val]])
         else:
             # Handle case where row is missing in sheet? 
             pass
 
-    def upload_sheet_data(self, title, data_list):
-        """Uploads list of dicts to a new/cleared sheet."""
+    def upload_sheet_data(self, sheet_name, data, include_header=True):
+        """Uploads list of dicts to a new or existing worksheet."""
         self._ensure_connection()
+        
+        # Prepare header and rows
+        # We need to map our internal dict keys to columns
+        rows_to_upload = []
+        if include_header:
+            header = ["Name", "Statik", "Rank", "Articles", "Sum", "Processed"]
+            rows_to_upload.append(header)
+        
+        for item in data:
+            arts = ",".join(item.get('articles', []))
+            row = [
+                item.get('name', ''),
+                item.get('statik', ''),
+                item.get('rank', ''),
+                arts,
+                item.get('sum', 0),
+                item.get('processed', 1)
+            ]
+            rows_to_upload.append(row)
+            
         try:
-            ws = self.sh.worksheet(title)
+            ws = self.sh.worksheet(sheet_name)
             ws.clear()
         except gspread.WorksheetNotFound:
-            ws = self.sh.add_worksheet(title=title, rows=len(data_list)+20, cols=10)
+            ws = self.sh.add_worksheet(title=sheet_name, rows=len(rows_to_upload)+10, cols=6)
             
-        headers = ["Name", "Static ID", "Rank", "Articles", "Sum", "Processed"]
-        values = [headers]
-        
-        for item in data_list:
-            # item is dict from app_ui
-            values.append([
-                item['name'], 
-                item['statik'], 
-                item['rank'], 
-                "", # Articles
-                0,  # Sum
-                0   # Processed
-            ])
-             
-        ws.update(range_name="A1", values=values)
+        ws.update(rows_to_upload)
         return ws
