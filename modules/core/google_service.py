@@ -1,9 +1,9 @@
 import gspread
 import hashlib
-from utils import get_resource_path
+from modules.core.utils import get_resource_path
 
 class GoogleService:
-    def __init__(self, key_file='service_account.json', spread_name="Gov UT"):
+    def __init__(self, key_file='assets/service_account.json', spread_name="Gov UT"):
         self.key_file = get_resource_path(key_file)
         self.spread_name = spread_name
         self.gc = None
@@ -32,7 +32,7 @@ class GoogleService:
         
         return ws.get_all_records()
 
-    def create_user(self, username, password, role, can_edit, can_upload):
+    def create_user(self, username, password, role="User", can_edit="0", can_upload="0"):
         """Creates a new user if not exists."""
         self._ensure_connection()
         ws = self.sh.worksheet("Users")
@@ -44,6 +44,26 @@ class GoogleService:
             
         phash = hashlib.sha256(password.encode()).hexdigest()
         ws.append_row([username, phash, role, can_edit, can_upload])
+
+    def update_user_password(self, username, new_password):
+        """Updates the password for an existing user."""
+        self._ensure_connection()
+        ws = self.sh.worksheet("Users")
+        
+        # Find row by username
+        users = self.get_users()
+        row_idx = None
+        for i, u in enumerate(users):
+            if str(u.get('Username')) == username:
+                row_idx = i + 2 # +1 for header, +1 for 0-index
+                break
+        
+        if not row_idx:
+            raise ValueError("Пользователь не найден")
+            
+        new_hash = hashlib.sha256(new_password.encode()).hexdigest()
+        # Password is in column 2 (B)
+        ws.update_cell(row_idx, 2, new_hash)
 
     def connect_worksheet(self, title):
         """Connects to or creates a worksheet with headers."""

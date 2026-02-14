@@ -6,11 +6,11 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QDialog, QCheckBox, QComboBox, QLineEdit, QScrollArea, QFrame,
                              QInputDialog, QSpinBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, pyqtSlot, QTimer
-from PyQt6.QtGui import QAction, QColor, QPalette, QPixmap, QIcon, QCursor
-from config import ARTICLES
-from auth import AdminPanel
-from google_service import GoogleService
-from utils import get_resource_path
+from PyQt6.QtGui import QAction, QColor, QPalette, QPixmap, QIcon, QCursor, QPainter
+from modules.core.config import ARTICLES
+from modules.ui.auth import AdminPanel
+from modules.core.google_service import GoogleService
+from modules.core.utils import get_resource_path
 import csv
 
 # Worker for threaded tasks
@@ -295,6 +295,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("МВД Helper v2.0")
         self.resize(1200, 800)
         
+        # Enable tracking for mouse events if needed, but for paintEvent it's automatic.
+        # Ensure palette is prepared if we fallback.
+        
         self.current_sort_key = None
         self.current_sort_asc = True
 
@@ -313,7 +316,7 @@ class MainWindow(QMainWindow):
         # Default view permission is implicit
             
         self.setWindowTitle(f"Employee Data - {user_data.get('Username')} ({user_data.get('Role')})")
-        self.setWindowIcon(QIcon(get_resource_path("image.png"))) # Set application icon
+        self.setWindowIcon(QIcon(get_resource_path("assets/image.png"))) # Set application icon
         self.resize(1200, 800)
         
         # Initialize Data
@@ -422,6 +425,9 @@ class MainWindow(QMainWindow):
         """)
 
     def init_ui(self):
+        # Apply Background Image
+        self.update_background_image()
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -510,17 +516,40 @@ class MainWindow(QMainWindow):
         # settings_btn.setStyleSheet("margin: 0px;")
         right_btn_layout.addWidget(settings_btn)
         
-        # Admin
-        if self.is_admin:
-            admin_btn = QPushButton("🛡 Админ панель")
-            admin_btn.setStyleSheet("background-color: #d63031; color: white; border: none; border-radius: 8px; padding: 10px;")
-            admin_btn.clicked.connect(self.open_admin_panel)
-            right_btn_layout.addWidget(admin_btn)
+        # Back to Launcher Button (Replaces Admin Panel)
+        launcher_btn = QPushButton("🏠 В Лаунчер")
+        # Match style with typical buttons but specific color
+        launcher_btn.setStyleSheet("""
+            QPushButton { 
+                background-color: #2a82da; 
+                color: white; 
+                border: none; 
+                border-radius: 8px; 
+                padding: 10px; 
+                min-width: 100px; 
+                font-weight: bold; 
+            }
+            QPushButton:hover { background-color: #3a92ea; }
+        """)
+        launcher_btn.clicked.connect(self.return_to_launcher)
+        right_btn_layout.addWidget(launcher_btn)
             
         # User Info
         user_text = f"{self.user_data.get('Username')} ({self.user_data.get('Role')})"
         self.user_info_label = QLabel(user_text)
-        self.user_info_label.setStyleSheet("font-weight: bold; padding: 5px; border: 1px solid #555; border-radius: 8px; background: #444; color: #ddd; font-size: 12px;")
+        # Match height/padding with buttons (padding: 10px in buttons)
+        self.user_info_label.setStyleSheet("""
+            QLabel {
+                font-weight: bold; 
+                padding: 10px; 
+                border: none; 
+                border-radius: 8px; 
+                background: #444; 
+                color: #ddd; 
+                font-size: 13px;
+                min-width: 100px;
+            }
+        """)
         self.user_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right_btn_layout.addWidget(self.user_info_label)
 
@@ -1169,9 +1198,18 @@ class MainWindow(QMainWindow):
         if ok and text:
             self.load_from_google(text)
 
-    def open_admin_panel(self):
-        AdminPanel(self).exec()
+    def return_to_launcher(self):
+        from modules.ui.launcher import LauncherWindow
+        self.launcher = LauncherWindow(self.user_data)
         
+        def restart_main(user_data):
+            self.new_main = MainWindow(user_data)
+            self.new_main.show()
+            
+        self.launcher.launch_main.connect(restart_main)
+        self.launcher.show()
+        self.close()
+
     def open_filter(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Фильтр")
@@ -1340,8 +1378,88 @@ class MainWindow(QMainWindow):
     def set_loading(self, show, message=""):
         self.is_loading = show
         self.loading_label.setText(message if show else "")
-        self.loading_label.setVisible(show)
 
     def on_search_changed(self, text):
         self.search_text = text.lower()
         self.apply_filters()
+
+    def resizeEvent(self, event):
+        self.update_background_image()
+        super().resizeEvent(event)
+
+    def update_background_image(self):
+        try:
+            image_path = get_resource_path("assets/image.png")
+            pixmap = QPixmap(image_path)
+            
+            if not pixmap.isNull():
+                # Scale respecting aspect ratio, based on the smaller dimension (cover effect with contain logic? User said "based on smaller dimension width or height")
+                # User said: "stretch keeping width and height in equal proportion) full screen and center (rely on smaller magnitude width or height of window)"
+                # "Rely on smaller magnitude" typically means "Contain" (fit inside), because if you rely on the larger one you cover (crop).
+                # But user also said "stretch to full screen".
+                # If I scale to the smaller dimension, I will have empty space on the other dimension.
+                # If I scale to the LARGER dimension, I cover the screen but crop the image.
+                # Let's try to interpret "rely on smaller magnitude" combined with "full screen".
+                # Maybe they mean: Size the image such that its dimensions match the screen's smaller dimension? That would leave gaps.
+                # Or maybe they mean "Scale so that the image Fully Covers the screen but minimizes cropping?" (which is AspectRatioMode.KeepAspectRatioByExpanding)
+                
+                # Let's re-read: "make image... background of entire section... (stretch saving width and height in same proportion) on full screen and center (rely on smaller magnitude width or height of window)"
+                
+                # If I rely on the smaller magnitude to set the scale, the image will be smaller than the window in the other dimension.
+                # e.g. Window 1920x1080. Smaller is 1080. If I scale image height to 1080, width might be 1080 (square image). Then I have 840px empty space.
+                # This contradicts "on full screen". 
+                
+                # Unless they mean the image IS the background content and should be fully visible (KeepAspectRatio)?
+                # "Background of ... section" usually implies covering it.
+                
+                # Let's try Qt.AspectRatioMode.KeepAspectRatio which fits it inside. If that's what "rely on smaller" means.
+                # Then center it.
+                
+                scaled = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                
+                palette = self.palette()
+                # Create a brush with the image centered
+                # We need to draw it centered. Standard QPalette.Window brush tiles.
+                # To center and no-repeat, we usually need to ignore palette and paint it in paintEvent.
+                # But let's try setting it as palette brush first, but it will tile if smaller.
+                
+                # Better approach: Override paintEvent for the main window background.
+                pass
+        except Exception as e:
+            print(f"Error loading background: {e}")
+
+    def paintEvent(self, event):
+        try:
+            image_path = get_resource_path("assets/image.png")
+            pixmap = QPixmap(image_path)
+            if not pixmap.isNull():
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+                
+                # Calculate scale to fit "based on smaller magnitude" but usually we want to COVER or FIT.
+                # "stretch ... equal proportion ... on full screen ... rely on smaller magnitude"
+                
+                # Let's assume they want the image to be fully visible (FIT) centered on the screen.
+                # If they wanted "Cover", they would say "fill screen". 
+                # "rely on smaller magnitude" strongly suggests fitting the image so it doesn't get cropped, bounded by whichever side hits the edge first.
+                
+                # 1. Scale pixmap to fit within self.rect() keeping aspect ratio
+                scaled_pixmap = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                
+                # 2. Center it
+                x = (self.width() - scaled_pixmap.width()) // 2
+                y = (self.height() - scaled_pixmap.height()) // 2
+                
+                # 3. Draw
+                # Draw a dark background first to fill gaps?
+                painter.fillRect(self.rect(), QColor("#2b2b2b")) # Standard dark theme bg
+                painter.drawPixmap(x, y, scaled_pixmap)
+                
+            else:
+                # Fallback
+                painter = QPainter(self)
+                painter.fillRect(self.rect(), QColor("#2b2b2b"))
+                
+        except Exception as e:
+            # Fallback
+            pass

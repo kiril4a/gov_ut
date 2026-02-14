@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QGroupBox)
 from PyQt6.QtCore import Qt, QDate, pyqtSignal
 from PyQt6.QtGui import QIcon, QClipboard, QPixmap, QFont
-from utils import get_resource_path
+from modules.core.utils import get_resource_path
 
 # Функция для загрузки изображения на imgbb.com
 def upload_to_imgbb(image_path, api_key='6b7a6a3c7f5e8d9c4b3a2f1e0d9c8b7a'):

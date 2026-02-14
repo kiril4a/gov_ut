@@ -1,1 +1,31 @@
-/service_account.json
+# Ignore specific files and directories anywhere in the project
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+.venv/
+env/
+venv/
+
+# Build artifacts
+build/
+dist/
+*.spec
+modules/core/__pycache__
+modules/__pycache__
+modules/ui/__pycache__
+# VS Code
+.vscode/
+
+# Assets (keep image.png, ignore secrets)
+assets/service_account.json
+
+# Legacy support
+legacy/  
+# Assuming we want to keep code but ignore generated garbage.
+
+# OS generated files
+.DS_Store
+Thumbs.db
