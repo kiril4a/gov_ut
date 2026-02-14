@@ -60,12 +60,14 @@ class GoogleService:
         return worksheet.get_all_values()
 
     def update_row_data(self, worksheet, name, articles_str, sum_val, processed_val):
-        """Updates a row by name."""
+        """Updates a row by name using optimized batch update."""
         cell = worksheet.find(name)
         if cell:
-            worksheet.update_cell(cell.row, 4, articles_str)
-            worksheet.update_cell(cell.row, 5, sum_val)
-            worksheet.update_cell(cell.row, 6, processed_val)
+            # Prepare the range (Columns 4, 5, 6 -> D, E, F)
+            # Example range: "D5:F5"
+            range_str = f"D{cell.row}:F{cell.row}"
+            # Update the range in one API call
+            worksheet.update(range_name=range_str, values=[[articles_str, sum_val, processed_val]])
         else:
             # Handle case where row is missing in sheet? 
             pass
@@ -89,7 +91,7 @@ class GoogleService:
                 item.get('rank', ''),
                 arts,
                 item.get('sum', 0),
-                item.get('processed', 0)
+                item.get('processed', 1)
             ]
             rows_to_upload.append(row)
             

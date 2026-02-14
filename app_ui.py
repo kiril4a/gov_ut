@@ -4,9 +4,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QPushButton, QTableWidget, QTableWidgetItem, 
                              QHeaderView, QAbstractItemView, QMessageBox, QFileDialog, 
                              QDialog, QCheckBox, QComboBox, QLineEdit, QScrollArea, QFrame,
-                             QInputDialog)
+                             QInputDialog, QSpinBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QThread, pyqtSlot, QTimer
-from PyQt6.QtGui import QAction, QColor, QPalette, QPixmap, QIcon
+from PyQt6.QtGui import QAction, QColor, QPalette, QPixmap, QIcon, QCursor
 from config import ARTICLES
 from auth import AdminPanel
 from google_service import GoogleService
@@ -37,26 +37,148 @@ class ArticlesDialog(QDialog):
     def __init__(self, current_articles, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Выберите статьи")
-        self.resize(350, 500)
-        self.selected_articles = set(current_articles)
+        self.resize(450, 600)
+        
+        # Parse current articles into count map
+        # Expected format in list: ["6.1", "6.1", "7.2"]
+        self.article_counts = {}
+        for art in current_articles:
+            self.article_counts[art] = self.article_counts.get(art, 0) + 1
+            
+        self.controls = {} # Map code -> (checkbox, spinbox, container_widget)
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
         
+        # Style helper for rounded spinbox elements
+        # QSpinBox::up-button and ::down-button can be used to style the arrows.
+        # But QSpinBox native styling is tricky.
+        # Let's apply a general stylesheet for the dialog.
+        self.setStyleSheet("""
+            QWidget { 
+                background-color: #353535; 
+                color: white; 
+                font-family: "Segoe UI", sans-serif; 
+            }
+            QCheckBox { 
+                spacing: 8px; 
+                font-size: 14px; 
+            }
+            QCheckBox::indicator { 
+                width: 18px; 
+                height: 18px; 
+                border-radius: 4px; 
+                background: white; 
+                border: 1px solid #ccc; 
+            }
+            QCheckBox::indicator:unchecked { background-color: white; }
+            QCheckBox::indicator:checked { background-color: #2ecc71; border: 1px solid #2ecc71; image: none; }
+            
+            QSpinBox {
+                background-color: #444; 
+                color: white; 
+                border: 1px solid #555; 
+                border-radius: 8px; /* Rounded corners for the field */
+                padding: 4px;
+                font-weight: bold;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background-color: #555;
+                /* We can't easily make them perfectly rounded separate buttons via CSS alone on standard QSpinBox without subcontrol-origin hacking, 
+                   but we can round the corners that touch the edge or just keep them inside. */
+                border-radius: 4px;
+                margin: 1px;
+                width: 16px; 
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background-color: #666;
+            }
+            QSpinBox:disabled {
+                background-color: #333;
+                color: #777;
+                border: 1px solid #333;
+            }
+            QPushButton {
+                 border-radius: 8px;
+            }
+            QLineEdit { 
+                padding: 8px; 
+                border-radius: 15px; 
+                border: 1px solid #555; 
+                background-color: #252525; 
+                color: white; 
+            }
+        """)
+
+        # Search Filter
+        search_layout = QHBoxLayout()
+        lbl_search = QLabel("🔍")
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Поиск статьи...")
+        self.search_input.textChanged.connect(self.filter_articles)
+        search_layout.addWidget(lbl_search)
+        search_layout.addWidget(self.search_input)
+        layout.addLayout(search_layout)
+        
+        # Scroll Area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         widget = QWidget()
         self.vbox = QVBoxLayout(widget)
+        self.vbox.setSpacing(5)
         
-        self.checks = {}
+        from datetime import datetime, timedelta
+
+        def get_expiration_date(price):
+            base_date = datetime.now()
+            if price == 25000:
+                delta = 7
+            elif price == 50000:
+                delta = 21
+            elif price == 75000:
+                delta = 45
+            elif price == 100000:
+                return "Бессрочно"
+            else:
+                return "Неизвестно"
+                
+            expiry_date = base_date - timedelta(days=delta)
+            return expiry_date.strftime("%d.%m.%Y")
+
         for code, label, cost in ARTICLES:
-            text = f"{code} - {label} ({cost} RUB)"
+            expiry_str = get_expiration_date(cost)
+            text = f"{code} - {label} ({expiry_str})"
+            
+            # Container for each article row
+            row_widget = QWidget()
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            
+            # Checkbox
             chk = QCheckBox(text)
-            if code in self.selected_articles:
+            current_count = self.article_counts.get(code, 0)
+            if current_count > 0:
                 chk.setChecked(True)
-            self.vbox.addWidget(chk)
-            self.checks[code] = chk
+            
+            # Spinbox logic
+            spin = QSpinBox()
+            spin.setRange(1, 99)
+            spin.setValue(max(1, current_count))
+            spin.setFixedWidth(60) # Slightly wider for padding
+            # spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.PlusMinus) # Optional style change
+            spin.setEnabled(chk.isChecked())
+            
+            # Toggle spinbox with checkbox
+            chk.toggled.connect(spin.setEnabled)
+            
+            row_layout.addWidget(chk, stretch=1)
+            row_layout.addWidget(spin)
+            
+            self.vbox.addWidget(row_widget)
+            
+            # Store references for filtering and result gathering
+            self.controls[code] = (chk, spin, row_widget, text.lower())
             
         self.vbox.addStretch()
         scroll.setWidget(widget)
@@ -67,8 +189,83 @@ class ArticlesDialog(QDialog):
         btn_save.setStyleSheet("background-color: #2e86de; color: white; padding: 8px;")
         layout.addWidget(btn_save)
 
+    def filter_articles(self, text):
+        search_text = text.lower()
+        for code, (chk, spin, widget, label_text) in self.controls.items():
+            visible = search_text in label_text
+            widget.setVisible(visible)
+
     def get_selected(self):
-        return [code for code, chk in self.checks.items() if chk.isChecked()]
+        result = []
+        for code, (chk, spin, _, _) in self.controls.items():
+            if chk.isChecked():
+                count = spin.value()
+                for _ in range(count):
+                    result.append(code)
+        return result
+
+class StatusPicker(QDialog):
+    def __init__(self, parent=None, callback=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.callback = callback
+        self.init_ui()
+        
+    def init_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        container = QFrame()
+        container.setObjectName("container")
+        container.setStyleSheet("""
+            QFrame#container {
+                background-color: #353535; 
+                border: 1px solid #555; 
+                border-radius: 6px;
+            }
+        """)
+        main_layout.addWidget(container)
+        
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(5)
+        
+        def create_btn(text, bg, fg, val):
+            btn = QPushButton(text)
+            btn.setFixedSize(30, 30)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            # Override global QPushButton styles
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {bg};
+                    color: {fg};
+                    border: none;
+                    border-radius: 4px;
+                    font-size: 16px;
+                    font-weight: bold;
+                    min-width: 30px;
+                    padding: 0px;
+                }}
+                QPushButton:hover {{
+                    background-color: {bg}; 
+                    border: 1px solid white;
+                }}
+            """)
+            btn.clicked.connect(lambda: self.on_click(val))
+            layout.addWidget(btn)
+
+        # Cross (Red) - 0
+        create_btn("✗", "#ffcccc", "#990000", 0)
+        # Question (Orange) - 1
+        create_btn("?", "#fff4cc", "#cc8800", 1)  
+        # Check (Green) - 2
+        create_btn("✔", "#ccffcc", "#006600", 2)
+        
+    def on_click(self, val):
+        if self.callback:
+            self.callback(val)
+        self.close()
 
 class MainWindow(QMainWindow):
     def __init__(self, user_data):
@@ -449,7 +646,14 @@ class MainWindow(QMainWindow):
             name_item = self.table.item(row, 1) # Name is now at col 1
             if name_item:
                 data_idx = name_item.data(Qt.ItemDataRole.UserRole)
-                self.toggle_processed(data_idx)
+                # Show popup menu for status
+                if not self.can_edit: return
+                
+                picker = StatusPicker(parent=self, callback=lambda s: self.update_status(data_idx, s))
+                # Center popup on mouse cursor
+                cursor_pos = QCursor.pos()
+                picker.move(cursor_pos.x() - picker.width() // 2, cursor_pos.y() - picker.height() // 2)
+                picker.exec()
         
         # Copy Static ID (col 2) on single click as requested
         if col == 2:
@@ -535,7 +739,7 @@ class MainWindow(QMainWindow):
                 "rank": rank,
                 "articles": articles,
                 "sum": s_sum if s_sum else "0",
-                "processed": int(proc) if str(proc).isdigit() else 0
+                "processed": int(proc) if str(proc).isdigit() else 1
             })
             
         self.data = new_data
@@ -543,25 +747,32 @@ class MainWindow(QMainWindow):
         self.set_loading(False)
 
     def update_google_row(self, row_data):
-        if not self.worksheet: return
+        """Worker function: Updates row then fetches fresh data."""
+        if not self.worksheet: return []
         
         art_str = ", ".join(row_data['articles'])
         self.google_service.update_row_data(self.worksheet, row_data['name'], art_str, row_data['sum'], row_data['processed'])
+        
+        # Return fresh data for the UI thread to process
+        return self.google_service.fetch_all_values(self.worksheet)
 
-    def toggle_processed(self, idx):
+    def update_status(self, idx, new_state):
         if not self.can_edit: return
         
         if idx >= len(self.filtered_data): return
         
         row = self.filtered_data[idx]
         current_state = int(row['processed'])
-        new_state = (current_state + 1) % 3
-        row['processed'] = new_state
         
+        if current_state == new_state:
+            return
+
+        row['processed'] = new_state
         self.render_staff() 
 
         if self.sync_mode:
-            self.run_threaded(self.update_google_row, row)
+            # We pass _on_google_data_fetched as the callback to handle the fresh data
+            self.run_threaded(self.update_google_row, row, on_result=self._on_google_data_fetched)
 
     def open_articles_dialog(self, idx):
         if not self.can_edit: return
@@ -578,12 +789,14 @@ class MainWindow(QMainWindow):
             for code, _, cost in ARTICLES:
                 if code in new_selection:
                     total += cost
+                    
             row['sum'] = total
             
             self.render_staff()
             
             if self.sync_mode:
-                self.run_threaded(self.update_google_row, row)
+                # We pass _on_google_data_fetched as the callback to handle the fresh data
+                self.run_threaded(self.update_google_row, row, on_result=self._on_google_data_fetched)
 
     def render_staff(self):
         # Update Stats
@@ -1048,7 +1261,7 @@ class MainWindow(QMainWindow):
                         "rank": rank,
                         "articles": [],
                         "sum": 0,
-                        "processed": 0 
+                        "processed": 1 
                     })
             self.data = new_data
             self.filtered_data = list(self.data)
