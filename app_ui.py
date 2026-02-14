@@ -199,8 +199,8 @@ class ArticlesDialog(QDialog):
         result = []
         for code, (chk, spin, _, _) in self.controls.items():
             if chk.isChecked():
-                count = spin.value()
-                for _ in range(count):
+                # Add duplicate code entries according to spinbox value
+                for _ in range(spin.value()):
                     result.append(code)
         return result
 
@@ -272,10 +272,32 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.user_data = user_data
         self.is_admin = user_data.get('Role') == 'Admin'
+        self.can_edit = self.is_admin or user_data.get('Role') == 'Editor' # Editors can edit too?
+        # Assuming permissions are handled by role check
         
-        # Service instance
+        # State
+        self.data = []
+        self.filtered_data = []
+        self.current_page = 1
+        self.items_per_page = 50
+        self.is_loading = False
+        self.worksheet = None # GSpread worksheet object
+        self.sync_mode = False # True if connected to Google Sheet
+        self.filter_statuses = [] # Empty means all
+        self.filter_articles = []
+        
+        # Sorting state
+        self.current_sort_key = None
+        self.current_sort_asc = True
+        
         self.google_service = GoogleService()
         
+        self.setWindowTitle("МВД Helper v2.0")
+        self.resize(1200, 800)
+        
+        self.current_sort_key = None
+        self.current_sort_asc = True
+
         # Permissions
         if self.is_admin:
             self.can_edit = True
@@ -759,7 +781,8 @@ class MainWindow(QMainWindow):
     def update_status(self, idx, new_state):
         if not self.can_edit: return
         
-        if idx >= len(self.filtered_data): return
+        if idx >= len(self.filtered_data):
+            return
         
         row = self.filtered_data[idx]
         current_state = int(row['processed'])
@@ -780,23 +803,31 @@ class MainWindow(QMainWindow):
         
         row = self.filtered_data[idx]
         
-        dlg = ArticlesDialog(row['articles'], self)
+        original_sum = float(row.get('sum', 0))
+        dlg = ArticlesDialog(row.get('articles', []), self)
+        
         if dlg.exec():
             new_selection = dlg.get_selected()
             row['articles'] = new_selection
             
+            # Calculate total sum allowing duplicates
             total = 0
-            for code, _, cost in ARTICLES:
-                if code in new_selection:
-                    total += cost
-                    
-            row['sum'] = total
+            for code in new_selection:
+                # Find the article in global ARTICLES list
+                article = next((a for a in ARTICLES if a[0] == code), None)
+                if article:
+                    total += float(article[2])
             
+            # Use format to remove .0 if integer
+            if total.is_integer():
+                row['sum'] = str(int(total))
+            else:
+                row['sum'] = str(total)
+
             self.render_staff()
             
             if self.sync_mode:
-                # We pass _on_google_data_fetched as the callback to handle the fresh data
-                self.run_threaded(self.update_google_row, row, on_result=self._on_google_data_fetched)
+                 self.run_threaded(self.update_google_row, row, on_result=self._on_google_data_fetched)
 
     def render_staff(self):
         # Update Stats
@@ -948,14 +979,24 @@ class MainWindow(QMainWindow):
         # Also setting background color to lighter gray for rows as requested.
 
     def sort_staff(self, key, ascending=True):
+        self.current_sort_key = key
+        self.current_sort_asc = ascending
+
         def sort_key(row):
             val = row.get(key, "")
+            
             if key == 'rank':
-                # Try to convert to int for proper numeric sorting if possible
-                try:
+                val = str(val).strip()
+                if val.isdigit():
                     return int(val)
-                except ValueError:
-                    return str(val).lower()
+                return val.lower()
+                
+            if key == 'sum':
+                 try:
+                    return float(val)
+                 except ValueError:
+                    return 0
+            
             return str(val).lower()
 
         self.filtered_data.sort(key=sort_key, reverse=not ascending)
@@ -1202,32 +1243,39 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def apply_filters(self):
-        # Split search text by comma and strip whitespace
-        search_terms = [t.strip().lower() for t in self.search_text.split(',') if t.strip()]
-
-        def match_row(row):
-            # 1. Status Filter
-            if row['processed'] not in self.filter_statuses:
-                return False
+        text = self.search_text.lower()
+        res = []
+        
+        for r in self.data:
+            # Check search text
+            match_search = (text in str(r['name']).lower() or 
+                            text in str(r['statik']).lower() or 
+                            text in str(r['rank']).lower())
             
-            # 2. Article Filter (any selected article matches any of row's articles)
+            # Check status filter
+            match_status = True
+            if self.filter_statuses:
+                match_status = r['processed'] in self.filter_statuses
+                
+            # Check article filter 
+            match_articles = True
             if self.filter_articles:
-                if not any(a in self.filter_articles for a in row['articles']):
-                    return False
-
-            # 3. Search Filter (ALL terms must be present in the row string)
-            if search_terms:
-                # Construct a search string containing name, statik, articles codes, and article titles
-                art_labels = " ".join([self.article_map.get(a, "") for a in row['articles']])
-                row_content = f"{row['name']} {row['statik']} {','.join(row['articles'])} {art_labels}".lower()
-                for term in search_terms:
-                    if term not in row_content:
-                        return False
+                # If any of the row's articles match any of the filter articles
+                # Or must match ALL? Usually "any".
+                has_any = any(art in self.filter_articles for art in r['articles'])
+                if not has_any:
+                    match_articles = False
             
-            return True
-
-        self.filtered_data = [row for row in self.data if match_row(row)]
-        self.render_staff()
+            if match_search and match_status and match_articles:
+                res.append(r)
+                
+        self.filtered_data = res
+        self.current_page = 1
+        
+        if self.current_sort_key:
+            self.sort_staff(self.current_sort_key, self.current_sort_asc)
+        else:
+            self.render_staff()
 
     def load_file(self):
         if not self.can_upload:
