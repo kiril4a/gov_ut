@@ -771,6 +771,7 @@
   ('json.decoder', 'C:\\Python313\\Lib\\json\\decoder.py', 'PYMODULE'),
   ('json.encoder', 'C:\\Python313\\Lib\\json\\encoder.py', 'PYMODULE'),
   ('json.scanner', 'C:\\Python313\\Lib\\json\\scanner.py', 'PYMODULE'),
+  ('launcher', 'C:\\Users\\Kiril4a\\Desktop\\таблица\\launcher.py', 'PYMODULE'),
   ('logging', 'C:\\Python313\\Lib\\logging\\__init__.py', 'PYMODULE'),
   ('lzma', 'C:\\Python313\\Lib\\lzma.py', 'PYMODULE'),
   ('mimetypes', 'C:\\Python313\\Lib\\mimetypes.py', 'PYMODULE'),
