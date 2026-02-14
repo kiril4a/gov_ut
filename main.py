@@ -2,24 +2,27 @@ import sys
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from auth import LoginWindow
-from app_ui import MainWindow
+from launcher import LauncherWindow
 from utils import get_resource_path
 
+def start_launcher(user_data):
+    global launcher_window
+    launcher_window = LauncherWindow(user_data)
+    launcher_window.launch_main.connect(start_main_app)
+    launcher_window.show()
+
 def start_main_app(user_data):
-    # This function runs after successful login
+    from app_ui import MainWindow
     global main_window
     main_window = MainWindow(user_data)
     main_window.show()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    
-    # Set app icon globally if possible or for windows
     app.setWindowIcon(QIcon(get_resource_path("image.png")))
 
     login = LoginWindow()
-    # Connect the signal from LoginWindow to our start function
-    login.login_success.connect(start_main_app)
+    login.login_success.connect(start_launcher)
     login.show()
-    
+
     sys.exit(app.exec())
