@@ -1,14 +1,11 @@
 # Ignore specific files and directories anywhere in the project
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
 
 # Virtual Environments
 .venv/
 env/
 venv/
-
+dist/*.txt
 # Build artifacts
 build/
 dist/

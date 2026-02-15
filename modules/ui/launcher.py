@@ -136,13 +136,22 @@ class LauncherWindow(QMainWindow):
         self.btn_labor = QPushButton("👥 Управление трудом")
         self.btn_labor.clicked.connect(self.run_labor_management)
         modules_layout.addWidget(self.btn_labor)
+        
+        # New Governor Cabinet Button
+        self.btn_governor = QPushButton("🏛 Кабинет Губернатора")
+        # Check permissions
+        if not self.is_admin:
+            self.btn_governor.setEnabled(False)
+            self.btn_governor.setStyleSheet(self.btn_governor.styleSheet() + "background-color: #555; color: #888;")
+            self.btn_governor.setToolTip("Доступно только администраторам")
+        
+        self.btn_governor.clicked.connect(self.open_governor_cabinet)
+        modules_layout.addWidget(self.btn_governor)
 
         self.btn_gov = QPushButton("⚡ GovYPT (старая версия)")
         self.btn_gov.clicked.connect(self.run_gov_legacy)
         modules_layout.addWidget(self.btn_gov)
-        
-        # REMOVED Admin Panel Button from here
-            
+
         self.btn_order = QPushButton("📄 Шаблон постановлений")
         self.btn_order.clicked.connect(self.run_order_template)
         modules_layout.addWidget(self.btn_order)
@@ -161,7 +170,7 @@ class LauncherWindow(QMainWindow):
         bottom_layout = QHBoxLayout(bottom_frame)
         bottom_layout.setContentsMargins(15, 5, 15, 5)
 
-        version = QLabel("v1.2.5")
+        version = QLabel("v 1.2.6")
         version.setStyleSheet("color: #888;")
         bottom_layout.addWidget(version)
 
@@ -201,6 +210,29 @@ class LauncherWindow(QMainWindow):
             subprocess.Popen([python_exec, script_path])
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось запустить GOV.py:\n{e}")
+
+    def open_governor_cabinet(self):
+        try:
+            from modules.ui.governor import GovernorCabinetWindow
+            self.governor_window = GovernorCabinetWindow(self.user_data, self)
+            self.governor_window.show()
+            self.hide()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть Кабинет Губернатора:\n{e}")
+
+    def run_governor_cabinet(self):
+        try:
+            if self.user_data.get('Role') != 'Admin':
+                QMessageBox.warning(self, "Access Denied", "Available only for Administrators")
+                return
+
+            from modules.ui.governor import GovernorCabinetWindow
+            self.governor_window = GovernorCabinetWindow(self.user_data, self)
+            self.governor_window.show()
+            self.hide()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open Governor Cabinet:\n{e}")
 
     def open_admin_panel(self):
         try:

@@ -426,7 +426,7 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         # Apply Background Image
-        self.update_background_image()
+        # self.update_background_image()
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -1384,82 +1384,84 @@ class MainWindow(QMainWindow):
         self.apply_filters()
 
     def resizeEvent(self, event):
-        self.update_background_image()
+        # self.update_background_image()
         super().resizeEvent(event)
 
     def update_background_image(self):
-        try:
-            image_path = get_resource_path("assets/image.png")
-            pixmap = QPixmap(image_path)
+        pass
+        # try:
+        #     image_path = get_resource_path("assets/image.png")
+        #     pixmap = QPixmap(image_path)
             
-            if not pixmap.isNull():
-                # Scale respecting aspect ratio, based on the smaller dimension (cover effect with contain logic? User said "based on smaller dimension width or height")
-                # User said: "stretch keeping width and height in equal proportion) full screen and center (rely on smaller magnitude width or height of window)"
-                # "Rely on smaller magnitude" typically means "Contain" (fit inside), because if you rely on the larger one you cover (crop).
-                # But user also said "stretch to full screen".
-                # If I scale to the smaller dimension, I will have empty space on the other dimension.
-                # If I scale to the LARGER dimension, I cover the screen but crop the image.
-                # Let's try to interpret "rely on smaller magnitude" combined with "full screen".
-                # Maybe they mean: Size the image such that its dimensions match the screen's smaller dimension? That would leave gaps.
-                # Or maybe they mean "Scale so that the image Fully Covers the screen but minimizes cropping?" (which is AspectRatioMode.KeepAspectRatioByExpanding)
+        #     if not pixmap.isNull():
+        #         # Scale respecting aspect ratio, based on the smaller dimension (cover effect with contain logic? User said "based on smaller dimension width or height")
+        #         # User said: "stretch keeping width and height in equal proportion) full screen and center (rely on smaller magnitude width or height of window)"
+        #         # "Rely on smaller magnitude" typically means "Contain" (fit inside), because if you rely on the larger one you cover (crop).
+        #         # But user also said "stretch to full screen".
+        #         # If I scale to the smaller dimension, I will have empty space on the other dimension.
+        #         # If I scale to the LARGER dimension, I cover the screen but crop the image.
+        #         # Let's try to interpret "rely on smaller magnitude" combined with "full screen".
+        #         # Maybe they mean: Size the image such that its dimensions match the screen's smaller dimension? That would leave gaps.
+        #         # Or maybe they mean "Scale so that the image Fully Covers the screen but minimizes cropping?" (which is AspectRatioMode.KeepAspectRatioByExpanding)
                 
-                # Let's re-read: "make image... background of entire section... (stretch saving width and height in same proportion) on full screen and center (rely on smaller magnitude width or height of window)"
+        #         # Let's re-read: "make image... background of entire section... (stretch saving width and height in same proportion) on full screen and center (rely on smaller magnitude width or height of window)"
                 
-                # If I rely on the smaller magnitude to set the scale, the image will be smaller than the window in the other dimension.
-                # e.g. Window 1920x1080. Smaller is 1080. If I scale image height to 1080, width might be 1080 (square image). Then I have 840px empty space.
-                # This contradicts "on full screen". 
+        #         # If I rely on the smaller magnitude to set the scale, the image will be smaller than the window in the other dimension.
+        #         # e.g. Window 1920x1080. Smaller is 1080. If I scale image height to 1080, width might be 1080 (square image). Then I have 840px empty space.
+        #         # This contradicts "on full screen". 
                 
-                # Unless they mean the image IS the background content and should be fully visible (KeepAspectRatio)?
-                # "Background of ... section" usually implies covering it.
+        #         # Unless they mean the image IS the background content and should be fully visible (KeepAspectRatio)?
+        #         # "Background of ... section" usually implies covering it.
                 
-                # Let's try Qt.AspectRatioMode.KeepAspectRatio which fits it inside. If that's what "rely on smaller" means.
-                # Then center it.
+        #         # Let's try Qt.AspectRatioMode.KeepAspectRatio which fits it inside. If that's what "rely on smaller" means.
+        #         # Then center it.
                 
-                scaled = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        #         scaled = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 
-                palette = self.palette()
-                # Create a brush with the image centered
-                # We need to draw it centered. Standard QPalette.Window brush tiles.
-                # To center and no-repeat, we usually need to ignore palette and paint it in paintEvent.
-                # But let's try setting it as palette brush first, but it will tile if smaller.
+        #         palette = self.palette()
+        #         # Create a brush with the image centered
+        #         # We need to draw it centered. Standard QPalette.Window brush tiles.
+        #         # To center and no-repeat, we usually need to ignore palette and paint it in paintEvent.
+        #         # But let's try setting it as palette brush first, but it will tile if smaller.
                 
-                # Better approach: Override paintEvent for the main window background.
-                pass
-        except Exception as e:
-            print(f"Error loading background: {e}")
+        #         # Better approach: Override paintEvent for the main window background.
+        #         pass
+        # except Exception as e:
+        #     print(f"Error loading background: {e}")
 
     def paintEvent(self, event):
-        try:
-            image_path = get_resource_path("assets/image.png")
-            pixmap = QPixmap(image_path)
-            if not pixmap.isNull():
-                painter = QPainter(self)
-                painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        pass
+        # try:
+        #     image_path = get_resource_path("assets/image.png")
+        #     pixmap = QPixmap(image_path)
+        #     if not pixmap.isNull():
+        #         painter = QPainter(self)
+        #         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
                 
-                # Calculate scale to fit "based on smaller magnitude" but usually we want to COVER or FIT.
-                # "stretch ... equal proportion ... on full screen ... rely on smaller magnitude"
+        #         # Calculate scale to fit "based on smaller magnitude" but usually we want to COVER or FIT.
+        #         # "stretch ... equal proportion ... on full screen ... rely on smaller magnitude"
+        #         
+        #         # Let's assume they want the image to be fully visible (FIT) centered on the screen.
+        #         # If they wanted "Cover", they would say "fill screen". 
+        #         # "rely on smaller magnitude" strongly suggests fitting the image so it doesn't get cropped, bounded by whichever side hits the edge first.
                 
-                # Let's assume they want the image to be fully visible (FIT) centered on the screen.
-                # If they wanted "Cover", they would say "fill screen". 
-                # "rely on smaller magnitude" strongly suggests fitting the image so it doesn't get cropped, bounded by whichever side hits the edge first.
+        #         # 1. Scale pixmap to fit within self.rect() keeping aspect ratio
+        #         scaled_pixmap = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
                 
-                # 1. Scale pixmap to fit within self.rect() keeping aspect ratio
-                scaled_pixmap = pixmap.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        #         # 2. Center it
+        #         x = (self.width() - scaled_pixmap.width()) // 2
+        #         y = (self.height() - scaled_pixmap.height()) // 2
                 
-                # 2. Center it
-                x = (self.width() - scaled_pixmap.width()) // 2
-                y = (self.height() - scaled_pixmap.height()) // 2
+        #         # 3. Draw
+        #         # Draw a dark background first to fill gaps?
+        #         painter.fillRect(self.rect(), QColor("#2b2b2b")) # Standard dark theme bg
+        #         painter.drawPixmap(x, y, scaled_pixmap)
                 
-                # 3. Draw
-                # Draw a dark background first to fill gaps?
-                painter.fillRect(self.rect(), QColor("#2b2b2b")) # Standard dark theme bg
-                painter.drawPixmap(x, y, scaled_pixmap)
+        #     else:
+        #         # Fallback
+        #         painter = QPainter(self)
+        #         painter.fillRect(self.rect(), QColor("#2b2b2b"))
                 
-            else:
-                # Fallback
-                painter = QPainter(self)
-                painter.fillRect(self.rect(), QColor("#2b2b2b"))
-                
-        except Exception as e:
-            # Fallback
-            pass
+        # except Exception as e:
+        #     # Fallback
+        #     pass
