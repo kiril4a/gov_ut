@@ -2,8 +2,8 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QFrame, QTableWidget,
                              QTableWidgetItem, QHeaderView, QDateEdit, QComboBox, 
                              QDoubleSpinBox, QSpinBox, QMessageBox, QGroupBox, QSizePolicy,
-                             QCalendarWidget, QToolButton, QMenu, QAbstractSpinBox, QStyle, QApplication, QStyleOptionComboBox, QStyleOptionSpinBox)
-from PyQt6.QtCore import Qt, QDate, QEvent, QLocale, QRect, QPointF, QPoint
+                             QCalendarWidget, QToolButton, QMenu, QAbstractSpinBox, QStyle, QApplication, QStyleOptionComboBox, QStyleOptionSpinBox, QWidgetAction, QLineEdit)
+from PyQt6.QtCore import Qt, QDate, QEvent, QLocale, QRect, QPointF, QPoint, QSize
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QMouseEvent, QKeyEvent
 from modules.core.google_service import GoogleService
 from modules.core.utils import get_resource_path
@@ -14,12 +14,38 @@ class CustomCalendarWidget(QCalendarWidget):
         self.setLocale(QLocale(QLocale.Language.Russian))
         self.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
         self.setNavigationBarVisible(True)
+        
+        # Add blue buttons with white arrows for prev/next month
+        self.findChild(QToolButton, "qt_calendar_prevmonth").setText("◄")
+        self.findChild(QToolButton, "qt_calendar_prevmonth").setIcon(QIcon())  # Remove icon
+        self.findChild(QToolButton, "qt_calendar_nextmonth").setText("►")
+        self.findChild(QToolButton, "qt_calendar_nextmonth").setIcon(QIcon())  # Remove icon
+
         self.setStyleSheet("""
             QCalendarWidget QWidget { 
                 alternate-background-color: #2b2b2b; 
                 background-color: #2b2b2b; 
                 color: white;
             }
+            /* Remove highlight on hover for week days */
+            QCalendarWidget QHeaderView {
+                background-color: transparent;
+            }
+            QCalendarWidget QHeaderView::section {
+                background-color: transparent;
+                color: #b0b0b0;
+                padding: 4px;
+                border: none;
+                font-weight: bold;
+            }
+            QCalendarWidget QHeaderView::section:hover {
+                background-color: transparent; 
+                color: #b0b0b0; /* Keep color same */
+            }
+            QCalendarWidget QHeaderView::section:checked {
+                background-color: transparent;
+            }
+            
             QCalendarWidget QToolButton {
                 color: white;
                 background-color: transparent;
@@ -28,39 +54,118 @@ class CustomCalendarWidget(QCalendarWidget):
                 border: none;
                 margin: 2px;
                 font-weight: bold;
+                font-size: 14px;
             }
             QCalendarWidget QToolButton:hover {
                 background-color: #3a3a3a;
             }
-            QCalendarWidget QToolButton#qt_calendar_prevmonth {
-                qproperty-icon: none;
-                image: url(none); /* We will paint it or use text */
-                background-color: transparent;
-                width: 20px;
+            
+            /* Remove triangle near month */
+            QCalendarWidget QToolButton::menu-indicator {
+                image: none;
+                width: 0px;
             }
+            
+            /* Increase gap between month and year */
+            QCalendarWidget QToolButton#qt_calendar_monthbutton {
+                margin-right: 10px;
+                padding-right: 10px;
+                background-color: #2a82da; /* Blue background */
+                color: white;              /* White Text */
+                border-radius: 4px;        /* Consistent border radius */
+                padding: 4px 8px;         /* Padding for pill/button shape */
+                height: 25px;              /* Consistent height */
+            }
+            /* Year SpinBox Styling - Force Background */
+            QCalendarWidget QSpinBox {
+                margin-left: 10px;
+                background-color: #2a82da; 
+                background: #2a82da;
+                color: white;              
+                selection-background-color: #4aa3df;
+                selection-color: white; 
+                border: none;
+                font-weight: bold;
+                font-size: 14px;
+                border-radius: 4px;        
+                padding: 4px 8px;          
+                height: 25px;       
+                min-width: 60px;       
+            }
+            QCalendarWidget QSpinBox QAbstractItemView {
+                background-color: #2b2b2b;
+                color: white;
+                selection-background-color: #4aa3df;
+            }
+            QCalendarWidget QSpinBox::up-button, QCalendarWidget QSpinBox::down-button {
+                width: 0px; 
+            }
+
+            /* Remove highlight on hover for week days - Aggressive */
+            QCalendarWidget QTableView {
+                alternate-background-color: #2b2b2b;
+            }
+            QCalendarWidget QWidget#qt_calendar_week_day_names {
+                background-color: transparent;
+            } 
+            /* If standard header view approach failed, try excluding hover state specifically on the view's header */
+            QCalendarWidget QHeaderView::section {
+                background-color: transparent;
+                color: #b0b0b0;
+                padding: 4px;
+                border: none;
+                font-weight: bold;
+            }
+            QCalendarWidget QHeaderView::section:hover {
+                background-color: transparent;
+                color: #b0b0b0; /* Keep color same */
+            }
+            QCalendarWidget QHeaderView::section:checked {
+                 background-color: transparent;
+            }
+
+            /* Style Prev/Next buttons (Blue with White text) */
+            QCalendarWidget QToolButton#qt_calendar_prevmonth, 
             QCalendarWidget QToolButton#qt_calendar_nextmonth {
-                qproperty-icon: none;
-                background-color: transparent;
-                width: 20px;
+                background-color: #2a82da;
+                color: white;
+                border-radius: 4px;
+                width: 30px;
+                height: 25px;
+                qproperty-icon: none; /* Ensure no default icon interferes */
             }
-            QCalendarWidget QMenu {
+            QCalendarWidget QToolButton#qt_calendar_prevmonth:hover, 
+            QCalendarWidget QToolButton#qt_calendar_nextmonth:hover {
+                background-color: #3a92ea;
+            }
+
+            /* Month dropdown hover highlight & style */
+            QMenu {
                 background-color: #2b2b2b;
                 color: white;
                 border: 1px solid #404040;
                 border-radius: 6px;
+                padding: 5px;
             }
-            QCalendarWidget QSpinBox {
+            QMenu::item {
+                padding: 5px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #4aa3df;
                 color: white;
-                background-color: transparent;
-                selection-background-color: #4aa3df;
-                border: none;
-                font-weight: bold;
             }
+
             QCalendarWidget QAbstractItemView:enabled {
                 color: white;
                 background-color: #2b2b2b;
-                selection-background-color: transparent; /* Disable default box, we draw rounded rect */
+                selection-background-color: transparent; 
                 selection-color: white;
+                border: none;
+                outline: none;
+            }
+            QCalendarWidget QAbstractItemView::item:hover {
+                background-color: #3d3d3d; 
                 border-radius: 6px;
             }
             QCalendarWidget QAbstractItemView:disabled {
@@ -69,20 +174,25 @@ class CustomCalendarWidget(QCalendarWidget):
         """)
 
     def paintCell(self, painter, rect, date):
-        # Custom painting for selected date to have rounded rectangle
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
         if date == self.selectedDate():
-            painter.save()
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor("#4aa3df"))
-            # Draw rounded rect slightly smaller than cell
             r = QRect(rect.left() + 2, rect.top() + 2, rect.width() - 4, rect.height() - 4)
             painter.drawRoundedRect(r, 6, 6)
             painter.setPen(Qt.GlobalColor.white)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(date.day()))
-            painter.restore()
+        elif date == QDate.currentDate():
+            painter.setPen(QColor("#4aa3df")) 
         else:
-            super().paintCell(painter, rect, date)
+            if date.month() != self.monthShown():
+                painter.setPen(QColor("#555555"))  # Dark grey for other months
+            else:
+                painter.setPen(Qt.GlobalColor.white)
+
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(date.day()))
+        painter.restore()
 
 class DateEditClickable(QDateEdit):
     def __init__(self, parent=None):
@@ -91,31 +201,26 @@ class DateEditClickable(QDateEdit):
         self.setDisplayFormat("dd.MM.yyyy")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         
-        # Disable manual editing but allow click
-        # IMPORTANT: Removing self.setReadOnly(True) restores the arrow functionality implicitly!
-        # self.setReadOnly(True) 
         self.lineEdit().setReadOnly(True)
-        
-        # Set custom calendar
         self.setCalendarWidget(CustomCalendarWidget(self))
-
-        # Center text
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Install event filter to catch clicks everywhere
         self.lineEdit().installEventFilter(self)
 
     def eventFilter(self, source, event):
         if source == self.lineEdit() and event.type() == QEvent.Type.MouseButtonPress:
-            # Send F4 key event to toggle popup
-            key_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_F4, Qt.KeyboardModifier.NoModifier)
+            self.setFocus()
+            key_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+            QApplication.postEvent(self, key_event)
+            return True
+        elif event.type() == QEvent.Type.MouseButtonPress:
+            self.setFocus()
+            key_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
             QApplication.postEvent(self, key_event)
             return True
         return super().eventFilter(source, event)
 
     def keyPressEvent(self, event):
-        # Ignore keys except those that close/navigate popup if open
         if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Escape, Qt.Key.Key_Tab):
             super().keyPressEvent(event)
         elif event.text():
@@ -123,13 +228,26 @@ class DateEditClickable(QDateEdit):
         else:
              super().keyPressEvent(event)
 
+# Custom widgets that ignore mouse wheel events
+class NoScrollSpinBox(QSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+class NoScrollDoubleSpinBox(QDoubleSpinBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
+class NoScrollComboBox(QComboBox):
+    def wheelEvent(self, event):
+        event.ignore()
+
 class GovernorCabinetWindow(QMainWindow):
     def __init__(self, user_data, parent_launcher=None):
         super().__init__()
         self.user_data = user_data
         self.parent_launcher = parent_launcher
         self.google_service = GoogleService()
-        self.spreadsheet_id = "1E1dzanmyjcGUur8sp4uFsc7cADDhvNp4UEley6VIS6Y" # User provided link
+        self.spreadsheet_id = "1E1dzanmyjcGUur8sp4uFsc7cADDhvNp4UEley6VIS6Y"
         
         self.setWindowTitle("Governor Cabinet")
         self.setMinimumSize(1200, 800)
@@ -141,7 +259,7 @@ class GovernorCabinetWindow(QMainWindow):
             QLabel {
                 color: white;
                 font-size: 14px;
-                font-weight: bold; /* Make labels bolder */
+                font-weight: bold;
             }
             QGroupBox {
                 border: 1px solid #404040;
@@ -156,7 +274,7 @@ class GovernorCabinetWindow(QMainWindow):
                 padding: 0 3px;
             }
             QTableWidget {
-                background-color: #1e1e1e; /* Match the frame around the table */
+                background-color: #1e1e1e;
                 gridline-color: transparent;
                 color: #ddd;
                 border: none;
@@ -166,12 +284,10 @@ class GovernorCabinetWindow(QMainWindow):
             }
             QTableWidget::item {
                 background-color: #333333;
-                /* Vertical spacing - reset to minimal to see if that helps */
                 margin-top: 0px; 
-                margin-bottom: 8px; /* Push next row down */
-                /* Horizontal spacing between columns */
-                margin-left: 0px; 
-                margin-right: 4px; /* Same as header margin-right */
+                margin-bottom: 8px;
+                margin-left: 2px;
+                margin-right: 4px;
                 padding-left: 0px; 
                 border-radius: 6px; 
                 border: 1px solid #404040;
@@ -186,16 +302,11 @@ class GovernorCabinetWindow(QMainWindow):
                 padding: 6px;
                 border: 1px solid #404040;
                 font-weight: bold;
-                border-radius: 6px; /* Rounded headers */
-                margin-right: 4px; /* Space between headers */
-                margin-bottom: 8px; /* Space from table */
+                border-radius: 6px;
+                margin-right: 4px;
+                margin-left: 2px;
+                margin-bottom: 8px;
                 margin-top: 6px; 
-            }
-            QHeaderView::section:last {
-                background-color: rgba(128, 128, 128, 0.2); 
-                color: #808080; 
-                border: 2px solid #808080;
-                margin-right: 0px; 
             }
             QPushButton {
                 background-color: #2a82da;
@@ -217,17 +328,15 @@ class GovernorCabinetWindow(QMainWindow):
                 font-weight: bold;
                 min-height: 25px;
                 max-height: 25px;
-                margin: 5px; /* Add margin to center vertically roughly if item is taller */
+                margin: 5px;
                 selection-background-color: #4aa3df;
                 selection-color: white;
             }
-            /* Add hover/focus effects to show it's editable */
             QComboBox:hover, QDateEdit:hover, QDoubleSpinBox:hover, QSpinBox:hover,
             QComboBox:focus, QDateEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus {
                 background-color: #f0f0f0;
                 border-radius: 4px;
             }
-            /* Restore drop-down arrows and spin box arrows */
             QComboBox::drop-down, QDateEdit::drop-down {
                 border: none;
                 width: 15px; 
@@ -243,12 +352,45 @@ class GovernorCabinetWindow(QMainWindow):
             }
         """)
 
-        # Data placeholders
         self.transaction_data = [] # Left table
         self.item_definitions = [] # Right top table
+
+        # Initialize items_table before accessing it
+        self.items_table = QTableWidget()
+        self.items_table.setColumnCount(3) # Changed to 3 columns: Name, Price, Delete
+        self.items_table.setHorizontalHeaderLabels(["Название предмета", "Базовая цена", "x"])
         
+        # Configure columns to match trans_table style
+        self.items_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        
+        self.items_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.items_table.setColumnWidth(1, 120)
+        
+        self.items_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.items_table.setColumnWidth(2, 50)
+        
+        self.items_table.horizontalHeader().setStretchLastSection(False)
+
+        # Header "x" centered
+        item_del = QTableWidgetItem("x")
+        item_del.setToolTip("Удалить")
+        item_del.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.items_table.setHorizontalHeaderItem(2, item_del)
+
+        # Visual styles matching left table
+        self.items_table.setShowGrid(False) 
+        self.items_table.verticalHeader().setVisible(False) # Hide line numbers
+        self.items_table.verticalHeader().setDefaultSectionSize(45)
+        self.items_table.horizontalHeader().setDefaultSectionSize(40)
+        self.items_table.horizontalHeader().setMinimumSectionSize(40)
+
+        self.items_table.setMinimumWidth(200)  # Set a smaller minimum width for the right table
+        
+        # Init items table with plus row
+        self.init_items_table()
+
+        # Ensure init_ui is called to initialize all UI components, including trans_table
         self.init_ui()
-        # TODO: Load data from Google Sheets
 
     def init_ui(self):
         central_widget = QWidget()
@@ -257,7 +399,6 @@ class GovernorCabinetWindow(QMainWindow):
         main_layout.setContentsMargins(15, 15, 15, 15)
         main_layout.setSpacing(15)
 
-        # --- Top Header --- 
         header_layout = QHBoxLayout()
         title_label = QLabel("GOVERNOR CABINET")
         title_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #4aa3df;")
@@ -265,7 +406,6 @@ class GovernorCabinetWindow(QMainWindow):
         
         header_layout.addStretch()
         
-        # Stats Summary
         stats_frame = QFrame()
         stats_frame.setStyleSheet("border: 2px solid #555; border-radius: 8px; padding: 5px;")
         stats_layout = QHBoxLayout(stats_frame)
@@ -281,7 +421,6 @@ class GovernorCabinetWindow(QMainWindow):
         
         header_layout.addStretch()
         
-        # Period Selection
         period_layout = QHBoxLayout()
         period_layout.addWidget(QLabel("Период:"))
         self.period_combo = QComboBox()
@@ -291,7 +430,6 @@ class GovernorCabinetWindow(QMainWindow):
         
         header_layout.addSpacing(20)
 
-        # Back to Launcher
         btn_back = QPushButton("В лаунчер")
         btn_back.setStyleSheet("background-color: #555; border: 1px solid #777;")
         btn_back.clicked.connect(self.return_to_launcher)
@@ -299,60 +437,51 @@ class GovernorCabinetWindow(QMainWindow):
         
         main_layout.addLayout(header_layout)
 
-        # --- Main Content Area (Split Left/Right) ---
         content_layout = QHBoxLayout()
         
-        # === LEFT COLUMN: Transactions ===
         left_layout = QVBoxLayout()
         
-        # Group: Add Transaction (Using a custom widget to look like table header row?)
         grp_trans = QGroupBox("Операции (Доход/Расход)")
         grp_trans_layout = QVBoxLayout(grp_trans)
-        grp_trans_layout.setContentsMargins(5, 20, 5, 5) # Increased top to 20 to clear title, others 5 for small gap
+        grp_trans_layout.setContentsMargins(5, 20, 5, 5)
         
-        # Transaction Table
         self.trans_table = QTableWidget()
-        self.trans_table.setColumnCount(7) # Increase column for number (0) and delete button (6)
-        self.trans_table.setHorizontalHeaderLabels(["№", "Дата", "Предмет", "Кол-во", "Цена", "Сумма", "x"])
-        self.trans_table.horizontalHeader().setStretchLastSection(False) # Don't stretch last section automatically
+        self.trans_table.setColumnCount(8)
+        self.trans_table.setHorizontalHeaderLabels(["№", "Дата", "Тип", "Предмет", "Кол-во", "Цена", "Сумма", "x"])
+        self.trans_table.horizontalHeader().setStretchLastSection(False)
         
-        # Last header item custom widget or just unicode
         item_del = QTableWidgetItem("x")
         item_del.setToolTip("Удалить")
-        # Ensure header text is visible (not empty string) and styled appropriately
         item_del.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.trans_table.setHorizontalHeaderItem(6, item_del)
+        self.trans_table.setHorizontalHeaderItem(7, item_del)
         
-        # Adjust column widths
         self.trans_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.trans_table.setColumnWidth(0, 50)
         
         self.trans_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self.trans_table.setColumnWidth(1, 120)  # Date
+        self.trans_table.setColumnWidth(1, 120)
 
-        # Item (2) matches Price (4) and Sum (5) = 150px fixed
-        self.trans_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.trans_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.trans_table.setColumnWidth(2, 40)
 
-        self.trans_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.trans_table.setColumnWidth(3, 80) 
-        
+        self.trans_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+
         self.trans_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.trans_table.setColumnWidth(4, 150) 
+        self.trans_table.setColumnWidth(4, 80) 
         
         self.trans_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.trans_table.setColumnWidth(5, 150)
-
+        
         self.trans_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        self.trans_table.setColumnWidth(6, 50) # Increased to 50 to prevent button cropping
+        self.trans_table.setColumnWidth(6, 150)
+
+        self.trans_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
+        self.trans_table.setColumnWidth(7, 50)
         
-        # Make the item column (2) stretch to fill available space
-        self.trans_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        
-        # Enable styling for transparent table background to show spacing
         self.trans_table.setShowGrid(False) 
-        self.trans_table.verticalHeader().setVisible(False) # Hide default vertical header numbers since we have col 0
-        self.trans_table.verticalHeader().setDefaultSectionSize(45) # Make rows slightly more compact to match header height maybe? Headers are auto.
-        self.trans_table.horizontalHeader().setDefaultSectionSize(40) # Reset header height
+        self.trans_table.verticalHeader().setVisible(False)
+        self.trans_table.verticalHeader().setDefaultSectionSize(45)
+        self.trans_table.horizontalHeader().setDefaultSectionSize(40)
         self.trans_table.horizontalHeader().setMinimumSectionSize(40) 
         
         grp_trans_layout.addWidget(self.trans_table)
@@ -361,7 +490,6 @@ class GovernorCabinetWindow(QMainWindow):
 
         left_layout.addWidget(grp_trans)
         
-        # Filter (Bottom Left)
         grp_filter = QGroupBox("Фильтр по предметам")
         filter_layout = QHBoxLayout(grp_filter)
         self.filter_combo = QComboBox()
@@ -375,59 +503,20 @@ class GovernorCabinetWindow(QMainWindow):
         
         left_layout.addWidget(grp_filter)
         
-        content_layout.addLayout(left_layout, stretch=70) # Increase width of left table (70%)
+        content_layout.addLayout(left_layout, stretch=7)
 
-        # === RIGHT COLUMN: Items & Stats ===
         right_layout = QVBoxLayout()
         
-        # Top Right: Item Definitions
+        right_layout.setStretch(0, 3)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
         grp_items = QGroupBox("Управление предметами")
         grp_items_layout = QVBoxLayout(grp_items)
-        
-        item_input_container = QFrame()
-        item_input_container.setStyleSheet("background-color: #2b2b2b; border: 1px solid #404040; border-radius: 6px; padding: 5px;")
-        item_input_row = QHBoxLayout(item_input_container)
-        item_input_row.setContentsMargins(5, 5, 5, 5)
-
-        self.new_item_name = QComboBox() 
-        self.new_item_name.setEditable(True)
-        self.new_item_name.setPlaceholderText("Название")
-        self.new_item_name.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        
-        self.new_item_price = QDoubleSpinBox()
-        self.new_item_price.setRange(0, 1000000000)
-        self.new_item_price.setPrefix("$")
-        self.new_item_price.setFixedWidth(100)
-        
-        btn_add_item = QPushButton("+")
-        btn_add_item.setFixedSize(30, 30)
-        btn_add_item.setStyleSheet("""
-            QPushButton { background-color: #2a82da; border-radius: 15px; font-weight: bold; font-size: 18px; }
-            QPushButton:hover { background-color: #3a92ea; }
-        """)
-        btn_add_item.clicked.connect(self.add_item_definition)
-        
-        item_input_row.addWidget(QLabel("Предмет:"))
-        item_input_row.addWidget(self.new_item_name)
-        item_input_row.addWidget(QLabel("Базовая цена:"))
-        item_input_row.addWidget(self.new_item_price)
-        item_input_row.addWidget(btn_add_item)
-        
-        grp_items_layout.addWidget(item_input_container)
-        
-        self.items_table = QTableWidget()
-        self.items_table.setColumnCount(2)
-        self.items_table.setHorizontalHeaderLabels(["Название предмета", "Базовая цена"])
-        self.items_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.items_table.setShowGrid(False) 
-        self.items_table.verticalHeader().setDefaultSectionSize(50)
-        self.items_table.setStyleSheet(self.trans_table.styleSheet()) # Copy style if possible or rely on global QTableWidget style
         
         grp_items_layout.addWidget(self.items_table)
         
         right_layout.addWidget(grp_items, stretch=1)
         
-        # Bottom Right: Item Statistics
         grp_stats = QGroupBox("Общая статистика по предметам")
         grp_stats_layout = QVBoxLayout(grp_stats)
         
@@ -439,11 +528,10 @@ class GovernorCabinetWindow(QMainWindow):
         
         right_layout.addWidget(grp_stats, stretch=1)
         
-        content_layout.addLayout(right_layout, stretch=30) # Decrease width of right tables (30%)
+        content_layout.addLayout(right_layout, stretch=3)
         
         main_layout.addLayout(content_layout)
 
-        # Footer
         footer_layout = QHBoxLayout()
         footer_layout.addStretch()
         self.lbl_global_sum = QLabel("Общая сумма: 0")
@@ -455,27 +543,22 @@ class GovernorCabinetWindow(QMainWindow):
         if self.parent_launcher:
             self.parent_launcher.show()
         else:
-            # Re-create launcher if reference lost
             from modules.ui.launcher import LauncherWindow
             self.launcher = LauncherWindow(self.user_data)
             self.launcher.show()
         self.close()
 
     def add_transaction(self):
-        # Placeholder
         pass
         
     def add_item_definition(self):
-        # Placeholder
         pass
 
     def load_data(self):
-        # Placeholder for loading from GSheets
         pass
 
     def init_trans_table(self):
-        # Initial setup of table with one "Add" row
-        self.trans_table.setRowCount(0) # Clear
+        self.trans_table.setRowCount(0)
         self.add_plus_row()
 
     def add_plus_row(self):
@@ -492,169 +575,329 @@ class GovernorCabinetWindow(QMainWindow):
                 color: #4aa3df; 
                 border: 1px dashed #404040; 
                 border-radius: 8px;
-                margin: 0px; /* REMOVE ALL MARGINS to center */
-                padding-bottom: 5px; /* Adjust padding if font baseline is off */
+                margin: 0px;
+                padding: 0px;
             }
             QPushButton:hover {
                 background-color: #252525;
             }
         """)
         btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.trans_table.setSpan(row_idx, 0, 1, 7) 
+        self.trans_table.setSpan(row_idx, 0, 1, 8)
         self.trans_table.setCellWidget(row_idx, 0, btn_add)
         
-        # Connect signal
         btn_add.clicked.connect(self.add_new_transaction_row)
 
     def add_new_transaction_row(self):
-        # Insert a new editable row BEFORE the "Plus" row
-        # Find the last row index, which is the plus button
         plus_row_index = self.trans_table.rowCount() - 1 
-        
-        # If the table is somehow empty or doesn't have the plus row at the end, handling might be tricky
-        # But assuming logic holds:
         self.trans_table.insertRow(plus_row_index)
         row = plus_row_index 
         
-        self.trans_table.setRowHeight(row, 45) # Match row height
+        self.trans_table.setRowHeight(row, 45)
         
-        # 0. Number 
         num_item = QTableWidgetItem(str(row + 1))
-        # Center alignment
         num_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        num_item.setFlags(Qt.ItemFlag.ItemIsEnabled) # Read only
-        num_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold)) # Bold
+        num_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        num_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.trans_table.setItem(row, 0, num_item)
 
-        # 1. Date - Using Custom DateEditClickable
-        date_edit = DateEditClickable()
-        date_edit.setDate(QDate.currentDate())
-        # The keyPressEvent override handles "read only" behavior for typing
+        date_btn = QPushButton(QDate.currentDate().toString("dd.MM.yyyy"))
+        date_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        date_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                font-weight: bold;
+                color: #dddddd;
+            }
+            QPushButton:hover {
+                color: #4aa3df;
+            }
+        """)
         
-        # Use container for centering
+        date_btn.clicked.connect(lambda checked, btn=date_btn: self.show_calendar_popup(btn))
+
         container_date = QWidget()
         layout_date = QHBoxLayout(container_date)
         layout_date.setContentsMargins(0,0,0,0)
         layout_date.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout_date.addWidget(date_edit)
+        layout_date.addWidget(date_btn)
         self.trans_table.setCellWidget(row, 1, container_date)
 
-        # 2. Item (ComboBox) - Empty by default
-        item_combo = QComboBox()
-        item_combo.setEditable(True)
-        item_combo.setCurrentIndex(-1) # No selection
-        item_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter) # Center text in line edit
+        type_btn = QPushButton("-")
+        type_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        type_btn.setProperty("is_income", False)
+        type_btn.setFixedSize(24, 24)
         
-        # Use container for centering
+        type_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ff5555; 
+                color: white; 
+                border-radius: 4px; 
+                font-weight: bold;
+                font-size: 18px; 
+                border: none;
+                padding: 0px; 
+                margin: 0px;
+                qproperty-text: "-";
+            }
+        """)
+        
+        container_type = QFrame()
+        layout_type = QVBoxLayout(container_type)
+        layout_type.setContentsMargins(0,0,0,0)
+        layout_type.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout_type.addWidget(type_btn)
+        
+        self.trans_table.setCellWidget(row, 2, container_type)
+
+        item_combo = NoScrollComboBox()
+        item_combo.setEditable(True)
+        item_combo.setCurrentIndex(-1)
+        item_combo.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
         container_item = QWidget()
         layout_item = QHBoxLayout(container_item)
         layout_item.setContentsMargins(0,0,0,0)
         layout_item.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        item_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed) # Expand horizontally
+        item_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout_item.addWidget(item_combo)
-        self.trans_table.setCellWidget(row, 2, container_item)
+        self.trans_table.setCellWidget(row, 3, container_item)
 
-        # 3. Qty - Default to empty or 0 visually? 
-        # Spinbox always has a number. Let's start with 0.
-        qty_spin = QSpinBox()
+        qty_block = QFrame()
+        qty_block_layout = QVBoxLayout(qty_block)
+        qty_block_layout.setContentsMargins(0,0,0,0)
+        qty_block_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        qty_spin = NoScrollSpinBox()
         qty_spin.setRange(-999999, 999999)
         qty_spin.setValue(0) 
         qty_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         qty_spin.valueChanged.connect(lambda: self.recalc_row(row))
         
-        # Use container for centering
-        container_qty = QWidget()
-        layout_qty = QHBoxLayout(container_qty)
-        layout_qty.setContentsMargins(0,0,0,0)
-        layout_qty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout_qty.addWidget(qty_spin)
-        self.trans_table.setCellWidget(row, 3, container_qty)
+        qty_block_layout.addWidget(qty_spin)
+        self.trans_table.setCellWidget(row, 4, qty_block)
 
-        # 4. Price - Integer as requested
-        price_spin = QSpinBox() # Changed from QDoubleSpinBox
+        price_spin = NoScrollSpinBox()
         price_spin.setRange(-1000000000, 1000000000)
         price_spin.setValue(0)
         price_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
         price_spin.valueChanged.connect(lambda: self.recalc_row(row))
         
-        # Use container for centering
         container_price = QWidget()
         layout_price = QHBoxLayout(container_price)
         layout_price.setContentsMargins(0,0,0,0)
         layout_price.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout_price.addWidget(price_spin)
-        self.trans_table.setCellWidget(row, 4, container_price)
+        self.trans_table.setCellWidget(row, 5, container_price)
 
-        # 5. Sum (Calculated, Read Only Item)
-        sum_item = QTableWidgetItem("0") # Integer 0
+        sum_item = QTableWidgetItem("0")
         sum_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        sum_item.setFlags(Qt.ItemFlag.ItemIsEnabled) # Read only
-        sum_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold)) # Bold
-        self.trans_table.setItem(row, 5, sum_item)
+        sum_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        sum_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self.trans_table.setItem(row, 6, sum_item)
 
-        # 6. Delete Action - REMOVED BUTTON as per request
-        # Just create a cell widget that mimics the red square style
+        type_btn.clicked.connect(lambda checked, r=row, btn=type_btn: self.toggle_type(r, btn))
+
+        del_btn = QPushButton()
+        # Use simple unicode trash can as requested: 🗑️
+        del_btn.setText("🧹")
+             
+        del_btn.setIcon(QIcon()) # Remove icon property if any
+        # Adjust size for text instead of icon
+        del_btn.setFixedSize(30, 30) 
         
-        del_label = QLabel()
-        del_label.setStyleSheet("""
-            QLabel {
-                background-color: transparent;
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.setStyleSheet("background: transparent; border: none; font-size: 16px; color: white;")
+        del_btn.clicked.connect(lambda: self.delete_row_by_widget(del_btn))
+
+        container_del = QFrame()
+        container_del.setFrameShape(QFrame.Shape.Box)
+        # Move styling to the container to handle hover effect for the whole block
+        # Make the button inside transparent and fill the container
+        container_del.setStyleSheet("""
+            QFrame {
                 border: 2px solid #ff5555; 
                 border-radius: 4px;
+                background-color: #ff5555;
+            }
+            QFrame:hover {
+                background-color: #ff7777; /* Lighter red on hover */
+                border: 2px solid #ff7777;
             }
         """)
-        # Using a label as a widget to get borders
-        # We wrap it in a container to respect cell size/alignment/margins
+        container_del.setLayout(QVBoxLayout())
+        container_del.layout().setContentsMargins(0, 0, 0, 0)
+        container_del.layout().setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        container_del = QWidget()
-        layout_del = QHBoxLayout(container_del)
-        # Mimic QTableWidget::item margins: margin-bottom: 8px; margin-right: 4px;
-        # But wait, QTableWidget styling is weird.
-        # "margin-bottom: 8px" on item means 8px gap between rows?
-        # If we remove margins here, the widget touches the cell boundaries.
-        # The cell boundaries are defined by row height.
-        # The user wants "окантовку как в наименовании".
-        # Let's try to match the visual block size.
-        layout_del.setContentsMargins(0, 0, 4, 8) 
+        # Ensure button takes up full space and passes clicks if needed, 
+        # but typically button handles click. We want hover on container.
+        # So we make button transparent and layout stretch.
+        del_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        del_btn.setStyleSheet("background: transparent; border: none; font-size: 16px; color: white;")
         
-        # del_label.setFixedHeight(30) # Let it expand
-        layout_del.addWidget(del_label)
+        container_del.layout().addWidget(del_btn)
         
-        self.trans_table.setCellWidget(row, 6, container_del)
+        self.trans_table.setCellWidget(row, 7, container_del)
 
-        # Recalculate row numbers for all rows just in case
         self.update_row_numbers()
-        
-        # Initial calculation
         self.recalc_row(row)
 
+    def toggle_type(self, row, btn):
+        is_income = btn.property("is_income")
+        new_state = not is_income
+        btn.setProperty("is_income", new_state)
+        
+        # 8. If Income selected: Quantity section abolished effectively (Hidden).
+        # Item name (service name) gets more focus.
+        # 9. If Income (Profit) selected: Cannot change Sum.
+        
+        # Recalculate context for the row
+        w_qty = self.trans_table.cellWidget(row, 4)
+        w_price = self.trans_table.cellWidget(row, 5)
+        
+        if new_state: # Became Income
+            # Style: Green +
+            btn.setText("+")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4caf50; 
+                    color: white; 
+                    border-radius: 4px; 
+                    font-weight: bold;
+                    font-size: 18px;
+                    border: none;
+                    padding: 0px;
+                    margin: 0px;
+                }
+            """)
+            
+            # Hide Qty (4)
+            if w_qty: w_qty.setVisible(False)
+            
+            # If quantity was pre-selected or whatever, we logically treat it as 1
+            # But visually we hide it.
+            
+            # Show Price (5) - This acts as the "Amount" input for Income
+            if w_price: w_price.setVisible(True)
+            
+            # Sum (6) - Read Only (We revert specific editable widget if it was there)
+            # Remove direct cell widget if exists (from previous logic check) and restore Item
+            if self.trans_table.cellWidget(row, 6):
+                self.trans_table.removeCellWidget(row, 6)
+                
+            sum_item = QTableWidgetItem("0")
+            sum_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            sum_item.setFlags(Qt.ItemFlag.ItemIsEnabled) # Read only
+            sum_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            self.trans_table.setItem(row, 6, sum_item)
+
+            # Update Item column placeholder
+            w_item = self.trans_table.cellWidget(row, 3)
+            if w_item:
+                combo = w_item.findChild(NoScrollComboBox)
+                if combo:
+                    combo.setPlaceholderText("Наименование услуги") # Service Name
+            
+        else: # Became Expense
+            # Style: Red -
+            btn.setText("-")
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #ff5555; 
+                    color: white; 
+                    border-radius: 4px; 
+                    font-weight: bold;
+                    font-size: 18px;
+                    border: none;
+                    padding: 0px;
+                    margin: 0px;
+                }
+            """)
+            
+            # Show Qty (4) and Price (5)
+            if w_qty: w_qty.setVisible(True)
+            if w_price: w_price.setVisible(True)
+            
+            # Ensure Sum (6) is Read Only (Standard)
+            if self.trans_table.cellWidget(row, 6):
+                self.trans_table.removeCellWidget(row, 6)
+                
+            sum_item = QTableWidgetItem("0")
+            sum_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            sum_item.setFlags(Qt.ItemFlag.ItemIsEnabled) 
+            sum_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            self.trans_table.setItem(row, 6, sum_item)
+            
+            w_item = self.trans_table.cellWidget(row, 3)
+            if w_item:
+                combo = w_item.findChild(NoScrollComboBox)
+                if combo:
+                    combo.setPlaceholderText("") # Default
+
+        self.recalc_row(row)
+
+    def show_calendar_popup(self, button):
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2b2b2b;
+                border: 1px solid #404040;
+                border-radius: 8px; /* Rounded corners for the menu itself */
+                padding: 5px;       /* Padding inside the menu */
+            }
+        """)
+        
+        calendar = CustomCalendarWidget(menu)
+        calendar.setGridVisible(True)
+        
+        # Set selection to currently displayed date on the button
+        text_date = button.text()
+        if text_date:
+            try:
+                date_val = QDate.fromString(text_date, "dd.MM.yyyy")
+                if date_val.isValid():
+                    calendar.setSelectedDate(date_val)
+            except:
+                pass
+
+        # Handle date selection
+        def on_date_selected(date):
+            button.setText(date.toString("dd.MM.yyyy"))
+            menu.close()
+            
+        calendar.clicked.connect(on_date_selected)
+        
+        action =  QWidgetAction(menu)
+        action.setDefaultWidget(calendar)
+        menu.addAction(action)
+        
+        menu.exec(button.mapToGlobal(QPoint(0, button.height())))
+
     def update_row_numbers(self):
-        # Iterate all rows except the last one (which is the + button)
         for r in range(self.trans_table.rowCount() - 1):
              item = self.trans_table.item(r, 0)
              if item:
                  item.setText(str(r + 1))
 
     def delete_row_by_widget(self, sender_widget):
-        # Find the row that contains this widget
         row_to_delete = -1
-        # Loop through rows to find the widget
         for r in range(self.trans_table.rowCount()):
-             # The button is inside a container, which is the cell widget
-            container = self.trans_table.cellWidget(r, 6)
+            container = self.trans_table.cellWidget(r, 7)
             if container:
-                # Our button is a child of this container
                 if sender_widget in container.findChildren(QPushButton):
                     row_to_delete = r
                     break
 
         if row_to_delete != -1:
             self.trans_table.removeRow(row_to_delete)
-            # Re-number rows
             self.update_row_numbers()
             
     def recalc_row(self, row):
         try:
+            if not hasattr(self, 'trans_table'):
+                return
+
             # If called by signal, find the row
             target_row = row
             sender = self.sender()
@@ -664,10 +907,10 @@ class GovernorCabinetWindow(QMainWindow):
                  # Find which row this sender belongs to
                 found_sender = False
                 for r in range(self.trans_table.rowCount()):
-                    # Check columns 3 (Qty) and 4 (Price)
+                    # Check columns 4 (Qty) and 5 (Price)
                     # The cell widget is a container, look inside it
-                    container_qty = self.trans_table.cellWidget(r, 3)
-                    container_price = self.trans_table.cellWidget(r, 4)
+                    container_qty = self.trans_table.cellWidget(r, 4)
+                    container_price = self.trans_table.cellWidget(r, 5)
                     
                     if container_qty and sender in container_qty.findChildren((QSpinBox, QDoubleSpinBox)):
                         target_row = r
@@ -678,29 +921,157 @@ class GovernorCabinetWindow(QMainWindow):
                         found_sender = True
                         break
                 
-                if not found_sender:
-                     # Fallback if somehow not found or direct call with row
-                     pass
+                if found_sender:
+                     target_row = r # Correctly capture the row
             
-            # Now calculate for target_row
-            container_qty = self.trans_table.cellWidget(target_row, 3)
-            container_price = self.trans_table.cellWidget(target_row, 4)
-            sum_item = self.trans_table.item(target_row, 5)
+            # Check logic based on Type
+            container_type = self.trans_table.cellWidget(target_row, 2)
+            is_income = False
+            if container_type:
+                 btn_type = container_type.findChild(QPushButton)
+                 if btn_type:
+                     is_income = btn_type.property("is_income")
+
+            container_qty = self.trans_table.cellWidget(target_row, 4)
+            container_price = self.trans_table.cellWidget(target_row, 5)
+            sum_item = self.trans_table.item(target_row, 6) 
             
-            if container_qty and container_price and sum_item:
-                # Extract spinboxes from containers
-                # Assuming there is only one spinbox in each container
-                qty_widgets = container_qty.findChildren((QSpinBox, QDoubleSpinBox))
+            if container_price and sum_item:
                 price_widgets = container_price.findChildren((QSpinBox, QDoubleSpinBox))
-                
-                if qty_widgets and price_widgets:
-                    qty = qty_widgets[0].value()
-                    price = price_widgets[0].value()
-                    total = int(qty * price) # Integer sum
+                price = price_widgets[0].value() if price_widgets else 0
+
+                if is_income:
+                    # Income: Sum = Price (Quantity ignored/hidden)
+                    total = price
+                    sum_item.setText(f"{total}")
+                else:
+                    # Expense: Sum = Price * Qty
+                    qty_widgets = container_qty.findChildren((QSpinBox, QDoubleSpinBox)) if container_qty else []
+                    qty = qty_widgets[0].value() if qty_widgets else 0
+                    total = int(qty * price)
                     sum_item.setText(f"{total}")
         except Exception:
             pass
 
     def delete_transaction(self):
-        # Old method, kept for compatibility if needed or removed
         pass
+
+    def init_items_table(self):
+        self.items_table.setRowCount(0)
+        self.add_item_plus_row()
+
+    def add_item_plus_row(self):
+        row_idx = self.items_table.rowCount()
+        self.items_table.insertRow(row_idx)
+        self.items_table.setRowHeight(row_idx, 50) 
+        
+        btn_add = QPushButton("+")
+        btn_add.setStyleSheet("""
+            QPushButton {
+                background-color: transparent; 
+                font-size: 24px; 
+                font-weight: bold; 
+                color: #4aa3df; 
+                border: 1px dashed #404040; 
+                border-radius: 8px;
+                margin: 0px;
+                padding: 0px;
+            }
+            QPushButton:hover {
+                background-color: #252525;
+            }
+        """)
+        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.items_table.setSpan(row_idx, 0, 1, 3) # Span all 3 columns
+        self.items_table.setCellWidget(row_idx, 0, btn_add)
+        
+        btn_add.clicked.connect(self.add_new_item_row)
+
+    def add_new_item_row(self):
+        plus_row_index = self.items_table.rowCount() - 1 
+        self.items_table.insertRow(plus_row_index)
+        row = plus_row_index 
+        
+        self.items_table.setRowHeight(row, 45)
+        
+        # 0. Item Name (Styled QLineEdit)
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Название")
+        name_edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_edit.setStyleSheet("""
+            QLineEdit {
+                background-color: #333333;
+                border: 1px solid #555555;
+                border-radius: 10px;
+                color: #ffffff;
+                padding: 4px;
+                font-family: 'Segoe UI';
+                font-size: 13px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #4aa3df;
+                background-color: #2b2b2b;
+            }
+        """)
+        
+        container_name = QWidget()
+        layout_name = QHBoxLayout(container_name)
+        layout_name.setContentsMargins(5, 0, 5, 0)
+        layout_name.addWidget(name_edit)
+        self.items_table.setCellWidget(row, 0, container_name)
+
+        # 1. Base Price (Double SpinBox)
+        # Using a container for centering exactly like left table used for prices
+        price_spin = NoScrollDoubleSpinBox()
+        price_spin.setRange(0, 1000000000)
+        price_spin.setPrefix("$")
+        price_spin.setValue(0)
+        price_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        price_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons) # Cleaner look? Or keep default
+        
+        container_price = QWidget()
+        layout_price = QHBoxLayout(container_price)
+        layout_price.setContentsMargins(0,0,0,0)
+        layout_price.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout_price.addWidget(price_spin)
+        self.items_table.setCellWidget(row, 1, container_price)
+
+        # 2. Delete Button
+        del_btn = QPushButton("🧹")
+        del_btn.setFixedSize(30, 30) 
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.setStyleSheet("background: transparent; border: none; font-size: 16px; color: white;")
+        del_btn.clicked.connect(lambda: self.delete_item_row_by_widget(del_btn))
+
+        container_del = QFrame()
+        container_del.setFrameShape(QFrame.Shape.Box)
+        container_del.setStyleSheet("""
+            QFrame {
+                border: 2px solid #ff5555; 
+                border-radius: 4px;
+                background-color: #ff5555;
+            }
+            QFrame:hover {
+                background-color: #ff7777;
+                border: 2px solid #ff7777;
+            }
+        """)
+        container_del.setLayout(QVBoxLayout())
+        container_del.layout().setContentsMargins(0, 0, 0, 0)
+        container_del.layout().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        del_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        container_del.layout().addWidget(del_btn)
+        
+        self.items_table.setCellWidget(row, 2, container_del)
+
+    def delete_item_row_by_widget(self, sender_widget):
+        row_to_delete = -1
+        for r in range(self.items_table.rowCount()):
+            container = self.items_table.cellWidget(r, 2)
+            if container:
+                if sender_widget in container.findChildren(QPushButton):
+                    row_to_delete = r
+                    break
+        if row_to_delete != -1:
+            self.items_table.removeRow(row_to_delete)
