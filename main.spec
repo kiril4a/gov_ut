@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('image.png', '.'), ('service_account.json', '.')],
+    datas=[('assets/image.png', 'assets'), ('assets/service_account.json', 'assets'), ('legacy/GOV.py', 'legacy')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['image.png'],
+    icon=['assets/image.png'],
 )
