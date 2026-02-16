@@ -794,7 +794,9 @@ class MainWindow(QMainWindow):
             })
             
         self.data = new_data
-        self.apply_filters()
+        # Preserve the current page & sort state when data is refreshed from Google
+        # so the user doesn't get moved back to page 1 unexpectedly during a sync.
+        self.apply_filters(preserve_page_sort=True)
         self.set_loading(False)
 
     def update_google_row(self, row_data):
@@ -1280,10 +1282,15 @@ class MainWindow(QMainWindow):
         layout.addLayout(btns_layout)
         dialog.exec()
 
-    def apply_filters(self):
+    def apply_filters(self, preserve_page_sort: bool = False):
+        """Filter self.data into self.filtered_data.
+
+        If preserve_page_sort is True (used when refreshing from Google), do not
+        reset self.current_page — keep the user's current page and sorting.
+        """
         text = self.search_text.lower()
         res = []
-        
+
         for r in self.data:
             # Check search text
             match_search = (text in str(r['name']).lower() or 
@@ -1299,7 +1306,6 @@ class MainWindow(QMainWindow):
             match_articles = True
             if self.filter_articles:
                 # If any of the row's articles match any of the filter articles
-                # Or must match ALL? Usually "any".
                 has_any = any(art in self.filter_articles for art in r['articles'])
                 if not has_any:
                     match_articles = False
@@ -1308,8 +1314,12 @@ class MainWindow(QMainWindow):
                 res.append(r)
                 
         self.filtered_data = res
-        self.current_page = 1
-        
+
+        # Only reset page when not preserving (i.e., user-initiated filters/search)
+        if not preserve_page_sort:
+            self.current_page = 1
+
+        # Reapply sorting/render. sort_staff will call render_staff internally.
         if self.current_sort_key:
             self.sort_staff(self.current_sort_key, self.current_sort_asc)
         else:
