@@ -9,376 +9,17 @@ import hashlib
 import time
 from modules.core.google_service import GoogleService
 from modules.core.utils import get_resource_path
-from modules.ui.google_sheet_worker import GoogleSheetLoadThread, GoogleSheetSyncThread
+from modules.core.google_sheet_worker import GoogleSheetLoadThread, GoogleSheetSyncThread
 from modules.ui.loading_overlay import LoadingOverlay
 from modules.ui.scrollbar_styles import get_scrollbar_qss
-
-class CustomCalendarWidget(QCalendarWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setLocale(QLocale(QLocale.Language.Russian))
-        self.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
-        self.setNavigationBarVisible(True)
-        
-        # Add blue buttons with white arrows for prev/next month
-        self.findChild(QToolButton, "qt_calendar_prevmonth").setText("◄")
-        self.findChild(QToolButton, "qt_calendar_prevmonth").setIcon(QIcon())  # Remove icon
-        self.findChild(QToolButton, "qt_calendar_nextmonth").setText("►")
-        self.findChild(QToolButton, "qt_calendar_nextmonth").setIcon(QIcon())  # Remove icon
-
-        self.setStyleSheet("""
-            QCalendarWidget QWidget { 
-                alternate-background-color: #2b2b2b; 
-                background-color: #2b2b2b; 
-                color: white;
-            }
-            /* Remove highlight on hover for week days */
-            QCalendarWidget QHeaderView {
-                background-color: transparent;
-            }
-            QCalendarWidget QHeaderView::section {
-                background-color: transparent;
-                color: #b0b0b0;
-                padding: 4px;
-                border: none;
-                font-weight: bold;
-            }
-            QCalendarWidget QHeaderView::section:hover {
-                background-color: transparent; 
-                color: #b0b0b0; /* Keep color same */
-            }
-            QCalendarWidget QHeaderView::section:checked {
-                background-color: transparent;
-            }
-            
-            QCalendarWidget QToolButton {
-                color: white;
-                background-color: transparent;
-                border-radius: 4px;
-                icon-size: 16px;
-                border: none;
-                margin: 2px;
-                font-weight: bold;
-                font-size: 14px;
-            }
-            QCalendarWidget QToolButton:hover {
-                background-color: #3a3a3a;
-            }
-            
-            /* Remove triangle near month */
-            QCalendarWidget QToolButton::menu-indicator {
-                image: none;
-                width: 0px;
-            }
-            
-            /* Increase gap between month and year */
-            QCalendarWidget QToolButton#qt_calendar_monthbutton {
-                margin-right: 10px;
-                padding-right: 10px;
-                background-color: #2a82da; /* Blue background */
-                color: white;              /* White Text */
-                border-radius: 4px;        /* Consistent border radius */
-                padding: 4px 8px;         /* Padding for pill/button shape */
-                height: 25px;              /* Consistent height */
-            }
-            /* Year SpinBox Styling - Force Background */
-            QCalendarWidget QSpinBox {
-                margin-left: 10px;
-                background-color: #2a82da; 
-                background: #2a82da;
-                color: white;              
-                selection-background-color: #4aa3df;
-                selection-color: white; 
-                border: none;
-                font-weight: bold;
-                font-size: 14px;
-                border-radius: 4px;        
-                padding: 4px 8px;          
-                height: 25px;       
-                min-width: 60px;       
-            }
-            QCalendarWidget QSpinBox QAbstractItemView {
-                background-color: #2b2b2b;
-                color: white;
-                selection-background-color: #4aa3df;
-            }
-            QCalendarWidget QSpinBox::up-button, QCalendarWidget QSpinBox::down-button {
-                width: 0px; 
-            }
-
-            /* Remove highlight on hover for week days - Aggressive */
-            QCalendarWidget QTableView {
-                alternate-background-color: #2b2b2b;
-            }
-            QCalendarWidget QWidget#qt_calendar_week_day_names {
-                background-color: transparent;
-            } 
-            /* If standard header view approach failed, try excluding hover state specifically on the view's header */
-            QCalendarWidget QHeaderView::section {
-                background-color: transparent;
-                color: #b0b0b0;
-                padding: 4px;
-                border: none;
-                font-weight: bold;
-            }
-            QCalendarWidget QHeaderView::section:hover {
-                background-color: transparent;
-                color: #b0b0b0; /* Keep color same */
-            }
-            QCalendarWidget QHeaderView::section:checked {
-                 background-color: transparent;
-            }
-
-            /* Style Prev/Next buttons (Blue with White text) */
-            QCalendarWidget QToolButton#qt_calendar_prevmonth, 
-            QCalendarWidget QToolButton#qt_calendar_nextmonth {
-                background-color: #2a82da;
-                color: white;
-                border-radius: 4px;
-                width: 30px;
-                height: 25px;
-                qproperty-icon: none; /* Ensure no default icon interferes */
-            }
-            QCalendarWidget QToolButton#qt_calendar_prevmonth:hover, 
-            QCalendarWidget QToolButton#qt_calendar_nextmonth:hover {
-                background-color: #3a92ea;
-            }
-
-            /* Month dropdown hover highlight & style */
-            QMenu {
-                background-color: #2b2b2b;
-                color: white;
-                border: 1px solid #404040;
-                border-radius: 6px;
-                padding: 5px;
-            }
-            QMenu::item {
-                padding: 5px 20px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected {
-                background-color: #4aa3df;
-                color: white;
-            }
-
-            QCalendarWidget QAbstractItemView:enabled {
-                color: white;
-                background-color: #2b2b2b;
-                selection-background-color: transparent; 
-                selection-color: white;
-                border: none;
-                outline: none;
-            }
-            QCalendarWidget QAbstractItemView::item:hover {
-                background-color: #3d3d3d; 
-                border-radius: 6px;
-            }
-            QCalendarWidget QAbstractItemView:disabled {
-                color: #555555;
-            }
-        """)
-
-    def paintCell(self, painter, rect, date):
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        if date == self.selectedDate():
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#4aa3df"))
-            r = QRect(rect.left() + 2, rect.top() + 2, rect.width() - 4, rect.height() - 4)
-            painter.drawRoundedRect(r, 6, 6)
-            painter.setPen(Qt.GlobalColor.white)
-        elif date == QDate.currentDate():
-            painter.setPen(QColor("#4aa3df")) 
-        else:
-            if date.month() != self.monthShown():
-                painter.setPen(QColor("#555555"))  # Dark grey for other months
-            else:
-                painter.setPen(Qt.GlobalColor.white)
-
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(date.day()))
-        painter.restore()
-
-class DateEditClickable(QDateEdit):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setCalendarPopup(True)
-        self.setDisplayFormat("dd.MM.yyyy")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        
-        self.lineEdit().setReadOnly(True)
-        self.setCalendarWidget(CustomCalendarWidget(self))
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lineEdit().installEventFilter(self)
-
-    def eventFilter(self, source, event):
-        if source == self.lineEdit() and event.type() == QEvent.Type.MouseButtonPress:
-            self.setFocus()
-            key_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
-            QApplication.postEvent(self, key_event)
-            return True
-        elif event.type() == QEvent.Type.MouseButtonPress:
-            self.setFocus()
-            key_event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
-            QApplication.postEvent(self, key_event)
-            return True
-        return super().eventFilter(source, event)
-
-    def keyPressEvent(self, event):
-        if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Escape, Qt.Key.Key_Tab):
-            super().keyPressEvent(event)
-        elif event.text():
-             event.ignore()
-        else:
-             super().keyPressEvent(event)
-
-# Custom widgets that ignore mouse wheel events
-class NoScrollSpinBox(QSpinBox):
-    def wheelEvent(self, event):
-        event.ignore()
-
-class NoScrollDoubleSpinBox(QDoubleSpinBox):
-    def wheelEvent(self, event):
-        event.ignore()
-
-class NoScrollComboBox(QComboBox):
-    def wheelEvent(self, event):
-        event.ignore()
-
-class ItemPickerPopup(QFrame):
-    """Lightweight suggestion popup implemented with QListWidget.
-    Styled dark, rounded, larger and closes when focus/window deactivates.
-    """
-    def __init__(self, items, parent=None, on_select=None):
-        # Create as top-level popup (no parent) so it floats above main window reliably
-        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self._owner = parent
-        self.on_select = on_select
-        self._items = list(items)
-
-        # Dark, rounded, larger styling
-        self.setStyleSheet('''
-            QFrame { background-color: #232323; border: 1px solid #3a3a3a; border-radius: 12px; }
-            QListWidget { background: transparent; border: none; padding: 10px; }
-            QListWidget::item { color: #f2f2f2; padding: 8px 12px; font-size: 14px; border-radius: 8px; }
-            QListWidget::item:hover { background-color: #3a3a3a; color: #ffffff; }
-            QListWidget::item:selected { background-color: #3a3a3a; }
-        ''')
-
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(8, 8, 8, 8)
-        self.layout.setSpacing(0)
-
-        self.list = QListWidget(self)
-        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.list.setSelectionMode(self.list.SingleSelection)
-        self.list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.list.itemClicked.connect(self._on_item_clicked)
-        self.layout.addWidget(self.list)
-
-        self.rebuild(items)
-
-    def focusOutEvent(self, event):
-        # close when popup loses focus (e.g., user switches to browser)
-        try:
-            self.close()
-        except Exception:
-            pass
-        return super().focusOutEvent(event)
-
-    def event(self, e):
-        # Close on window deactivation (alt-tab, switch app)
-        try:
-            if e.type() == QEvent.Type.WindowDeactivate:
-                try:
-                    self.close()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return super().event(e)
-
-    def rebuild(self, items):
-        self._items = list(items)
-        self.list.clear()
-        for it in self._items:
-            li = QListWidgetItem(it)
-            self.list.addItem(li)
-        # increase width for larger appearance
-        self.setFixedWidth(380)
-        self._clamp_height()
-
-    def _clamp_height(self):
-        count = self.list.count()
-        max_visible = 9
-        item_h = 28
-        h = min(count, max_visible) * item_h + 20
-        self.setFixedHeight(h)
-
-    def filter(self, text):
-        txt = (text or '').lower().strip()
-        self.list.clear()
-        for it in self._items:
-            if not txt or txt in it.lower():
-                self.list.addItem(QListWidgetItem(it))
-        self._clamp_height()
-
-    def show_at_widget(self, widget):
-        # Compute global position from widget and clamp to screen so popup is visible
-        try:
-            local_point = widget.rect().bottomLeft()
-            # larger vertical offset for clear separation
-            p = widget.mapToGlobal(local_point + QPoint(0, 10))
-            try:
-                screen = QApplication.primaryScreen()
-                avail = screen.availableGeometry()
-                x = p.x()
-                y = p.y()
-                if x + self.width() > avail.x() + avail.width():
-                    x = max(avail.x(), avail.x() + avail.width() - self.width() - 8)
-                if y + self.height() > avail.y() + avail.height():
-                    y_alt = widget.mapToGlobal(widget.rect().topLeft()).y() - self.height() - 10
-                    if y_alt > avail.y():
-                        y = y_alt
-                    else:
-                        y = max(avail.y(), avail.y() + avail.height() - self.height() - 8)
-                self.move(QPoint(x, y))
-            except Exception:
-                self.move(p)
-        except Exception:
-            if getattr(self, '_owner', None):
-                try:
-                    p = self._owner.mapToGlobal(widget.rect().bottomLeft() + QPoint(0, 10))
-                    self.move(p)
-                except Exception:
-                    pass
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        self.show()
-        try:
-            if self.list.count() > 0:
-                self.list.setCurrentRow(0)
-            self.list.setFocus()
-        except Exception:
-            pass
-
-    def _on_item_clicked(self, item):
-        if callable(self.on_select):
-            self.on_select(item.text())
-        self.close()
-
-    def closeEvent(self, event):
-        # ensure no dangling reference
-        try:
-            if getattr(self, '_owner', None):
-                pass
-        except Exception:
-            pass
-        return super().closeEvent(event)
+from modules.ui.widgets.custom_controls import (CustomCalendarWidget, DateEditClickable, 
+                             NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox, 
+                             ItemPickerPopup)
+from modules.ui.widgets.suggestions_popup import SuggestionsPopup
+from modules.ui.widgets.table_helpers import (create_centered_spinbox, create_delete_button, 
+                             create_date_button, create_plus_button)
 
 class RemoteLoadWorker(QThread):
-    data_loaded = pyqtSignal(dict)
     error_occurred = pyqtSignal(str)
 
     def __init__(self, google_service, spreadsheet_id):
@@ -447,7 +88,11 @@ class SyncWorker(QThread):
         # Aggregate changes for 3 minutes (180 seconds)
         while self._is_running:
             # Wait 180 seconds to accumulate tasks (collect queue over 3 minutes)
-            time.sleep(180)
+            # Use smaller sleep chunks to detect stop signal faster
+            for _ in range(180): 
+                if not self._is_running:
+                    return
+                time.sleep(1)
 
             # Export if there are queued changes
             self.mutex.lock()
@@ -532,7 +177,13 @@ class SyncWorker(QThread):
 
     def stop(self):
         self._is_running = False
-        self.wait()
+        # Do not wait for thread to finish if it is sleeping
+        # instead, self.wait() can cause hang if we don't break the loop
+        # The loop modification above ensures quick exit.
+        if self.isRunning():
+            self.wait(2000) # Wait at most 2 seconds
+            if self.isRunning():
+                self.terminate() # Force terminate if stuck
 
 class GovernorCabinetWindow(QMainWindow):
     def __init__(self, user_data, parent_launcher=None):
@@ -699,6 +350,13 @@ class GovernorCabinetWindow(QMainWindow):
         # Auto-import on first open
         QTimer.singleShot(0, self._auto_import_on_open)
 
+        # Initialize the shared custom suggestions popup
+        self._suggestions_popup = SuggestionsPopup(self)
+        self._suggestions_popup.suggestion_selected.connect(self._on_suggestion_selected)
+        
+        # Track which row editor triggered the popup
+        self._popup_active_editor = None
+
         # Shared completer model for item suggestions (robust alternative to custom popup)
         try:
             self._items_completer_model = QStringListModel()
@@ -743,7 +401,8 @@ class GovernorCabinetWindow(QMainWindow):
         self._suppress_popup = False
 
     def closeEvent(self, event):
-        self.sync_worker.stop()
+        if self.sync_worker:
+            self.sync_worker.stop()
         super().closeEvent(event)
 
     def init_ui(self):
@@ -913,13 +572,15 @@ class GovernorCabinetWindow(QMainWindow):
         main_layout.addLayout(content_layout)
 
     def return_to_launcher(self):
+        if self.sync_worker:
+            self.sync_worker.stop()
+        self.close()
         if self.parent_launcher:
             self.parent_launcher.show()
         else:
             from modules.ui.launcher import LauncherWindow
             self.launcher = LauncherWindow(self.user_data)
             self.launcher.show()
-        self.close()
 
     def add_transaction(self):
         pass
@@ -939,27 +600,10 @@ class GovernorCabinetWindow(QMainWindow):
         self.trans_table.insertRow(row_idx)
         self.trans_table.setRowHeight(row_idx, 50) 
         
-        btn_add = QPushButton("+")
-        btn_add.setStyleSheet("""
-            QPushButton {
-                background-color: transparent; 
-                font-size: 24px; 
-                font-weight: bold; 
-                color: #4aa3df; 
-                border: 1px dashed #404040; 
-                border-radius: 8px;
-                margin: 0px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                background-color: #252525;
-            }
-        """)
-        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_add = create_plus_button(self.add_new_transaction_row)
+        
         self.trans_table.setSpan(row_idx, 0, 1, 8)
         self.trans_table.setCellWidget(row_idx, 0, btn_add)
-        
-        btn_add.clicked.connect(self.add_new_transaction_row)
 
     def add_new_transaction_row(self):
         # Prevent intermediate repaints to avoid flicker of qty column when widgets are added
@@ -980,27 +624,8 @@ class GovernorCabinetWindow(QMainWindow):
         num_item.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         self.trans_table.setItem(row, 0, num_item)
 
-        date_btn = QPushButton(QDate.currentDate().toString("dd.MM.yyyy"))
-        date_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        date_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                font-weight: bold;
-                color: #dddddd;
-            }
-            QPushButton:hover {
-                color: #4aa3df;
-            }
-        """)
-        
-        date_btn.clicked.connect(lambda checked, btn=date_btn: self.show_calendar_popup(btn))
-
-        container_date = QWidget()
-        layout_date = QHBoxLayout(container_date)
-        layout_date.setContentsMargins(0,0,0,0)
-        layout_date.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout_date.addWidget(date_btn)
+        # Use helper for date button
+        container_date = create_date_button(QDate.currentDate().toString("dd.MM.yyyy"), self.show_calendar_popup)
         self.trans_table.setCellWidget(row, 1, container_date)
 
         # Type button (starts as Expense '-')
@@ -1010,8 +635,18 @@ class GovernorCabinetWindow(QMainWindow):
         # slightly larger to comfortably show +/-, with bold font
         type_btn.setFixedSize(28, 28)
         type_btn.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        # Use minimal base style; visuals applied in _apply_type_state
-        type_btn.setStyleSheet("border: none; padding: 0px; margin: 0px;")
+        # Default style for Expense
+        type_btn.setStyleSheet("""
+            QPushButton { 
+                background-color: #ff5555; 
+                color: #ffffff; 
+                border-radius: 4px; 
+                font-weight: bold; 
+                font-size: 16px; 
+                border: none; 
+                padding: 0px; 
+            }
+        """)
         
         container_type = QFrame()
         layout_type = QVBoxLayout(container_type)
@@ -1032,64 +667,8 @@ class GovernorCabinetWindow(QMainWindow):
         """)
         name_edit.setMinimumHeight(30)
 
-        # Attach shared completer if available
-        try:
-            if getattr(self, '_items_completer', None):
-                name_edit.setCompleter(self._items_completer)
-
-                # Show suggestions while typing (supports IME/Cyrillic): use textEdited and schedule complete
-                def _on_name_text_edited(txt, r=row, le=name_edit):
-                    try:
-                        comp = self._items_completer
-                        if comp is None:
-                            return
-                        comp.setCompletionPrefix(txt or "")
-                        # suppress global auto-close for the short time until popup shows
-                        try:
-                            self._suppress_global_close_until = time.time() + 0.25
-                        except Exception:
-                            pass
-                        QTimer.singleShot(0, comp.complete)
-                    except Exception:
-                        pass
-
-                name_edit.textEdited.connect(_on_name_text_edited)
-
-                # Show all suggestions when the field is focused and when empty
-                try:
-                    orig_focus = name_edit.focusInEvent
-                except Exception:
-                    orig_focus = None
-
-                def _focus_in(ev, r=row, le=name_edit):
-                    try:
-                        if callable(orig_focus):
-                            try:
-                                orig_focus(ev)
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    try:
-                        comp = self._items_completer
-                        if comp is None:
-                            return
-                        comp.setCompletionPrefix("")
-                        try:
-                            self._suppress_global_close_until = time.time() + 0.25
-                        except Exception:
-                            pass
-                        QTimer.singleShot(0, comp.complete)
-                    except Exception:
-                        pass
-
-                try:
-                    name_edit.focusInEvent = _focus_in
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
+        # Removed QCompleter logic, using custom popup instead
+        
         container_item = QWidget()
         layout_item = QHBoxLayout(container_item)
         # Reduce vertical margins to avoid pushing the edit below its cell area
@@ -1099,61 +678,42 @@ class GovernorCabinetWindow(QMainWindow):
         layout_item.addWidget(name_edit)
         self.trans_table.setCellWidget(row, 3, container_item)
 
-        # Track active editor and ensure popup shows on first interaction
+        # Track active editor and ensure popup shows on request
         try:
             name_edit.setProperty('trans_row', int(row))
             self._active_item_editor = name_edit
         except Exception:
             pass
 
-        # show popup as soon as user focuses/clicks into the field
+        # Use event filter or signal to trigger popup
         try:
-            name_edit.selectionChanged.connect(lambda r=row, le=name_edit: self._on_item_editor_interaction(r, le))
+            name_edit.textEdited.connect(lambda txt, r=row, le=name_edit: self._on_item_editor_interaction(r, le))
         except Exception:
             pass
+        
+        # Override focusInEvent on instance
         try:
-            name_edit.cursorPositionChanged.connect(lambda _o, _n, r=row, le=name_edit: self._on_item_editor_interaction(r, le))
+            old_focus = name_edit.focusInEvent
         except Exception:
-            pass
+            old_focus = None
+            
+        def _focus_in_mk2(ev, le=name_edit, r=row):
+            try:
+                if callable(old_focus): old_focus(ev)
+                self._on_item_editor_interaction(r, le)
+            except Exception:
+                pass
+        name_edit.focusInEvent = _focus_in_mk2
 
         name_edit.installEventFilter(self)
         name_edit.textChanged.connect(lambda txt, r=row: self.on_item_text_changed(r, txt))
         # Do not use QCompleter here; suggestions handled by custom popup
         
-        qty_block = QFrame()
-        qty_block_layout = QVBoxLayout(qty_block)
-        qty_block_layout.setContentsMargins(0,0,0,0)
-        qty_block_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        qty_spin = NoScrollSpinBox()
-        qty_spin.setRange(-999999, 999999)
-        qty_spin.setValue(0) 
-        qty_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        qty_spin.valueChanged.connect(lambda: self.recalc_row(row))
-        # remove physical up/down buttons
-        try:
-            qty_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        except Exception:
-            pass
-        
-        qty_block_layout.addWidget(qty_spin)
+        # Use helpers for Qty and Price spinboxes
+        qty_block = create_centered_spinbox(value=0, min_val=-999999, max_val=999999, on_change=lambda: self.recalc_row(row))
         self.trans_table.setCellWidget(row, 4, qty_block)
 
-        price_spin = NoScrollSpinBox()
-        price_spin.setRange(-1000000000, 1000000000)
-        price_spin.setValue(0)
-        price_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        price_spin.valueChanged.connect(lambda: self.recalc_row(row))
-        try:
-            price_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        except Exception:
-            pass
-        
-        container_price = QWidget()
-        layout_price = QHBoxLayout(container_price)
-        layout_price.setContentsMargins(0,0,0,0)
-        layout_price.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout_price.addWidget(price_spin)
+        container_price = create_centered_spinbox(value=0, min_val=-1000000000, max_val=1000000000, on_change=lambda: self.recalc_row(row))
         self.trans_table.setCellWidget(row, 5, container_price)
 
         sum_item = QTableWidgetItem("0")
@@ -1164,45 +724,13 @@ class GovernorCabinetWindow(QMainWindow):
 
         type_btn.clicked.connect(lambda checked, r=row, btn=type_btn: self.toggle_type(r, btn))
 
-        del_btn = QPushButton()
-        # Use simple unicode trash can as requested: 🗑️
-        del_btn.setText("🧹")
-             
-        del_btn.setIcon(QIcon()) # Remove icon property if any
-        # Adjust size for text instead of icon
-        del_btn.setFixedSize(30, 30) 
-        
-        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        del_btn.setStyleSheet("background: transparent; border: none; font-size: 16px; color: white;")
-        del_btn.clicked.connect(lambda: self.delete_row_by_widget(del_btn))
-
-        container_del = QFrame()
-        container_del.setFrameShape(QFrame.Shape.Box)
-        # Move styling to the container to handle hover effect for the whole block
-        # Make the button inside transparent and fill the container
-        container_del.setStyleSheet("""
-            QFrame {
-                border: 2px solid #ff5555; 
-                border-radius: 4px;
-                background-color: #ff5555;
-            }
-            QFrame:hover {
-                background-color: #ff7777; /* Lighter red on hover */
-                border: 2px solid #ff7777;
-            }
-        """)
-        container_del.setLayout(QVBoxLayout())
-        container_del.layout().setContentsMargins(0, 0, 0, 0)
-        container_del.layout().setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Use helper for delete button
+        container_del = create_delete_button(lambda btn: self.delete_row_by_widget(btn))
         
         # Ensure button takes up full space and passes clicks if needed, 
         # but typically button handles click. We want hover on container.
         # So we make button transparent and layout stretch.
-        del_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        del_btn.setStyleSheet("background: transparent; border: none; font-size: 16px; color: white;")
-        
-        container_del.layout().addWidget(del_btn)
-        
+        # Delete button container
         self.trans_table.setCellWidget(row, 7, container_del)
 
         # Apply initial type state to ensure correct qty visibility
@@ -1220,16 +748,54 @@ class GovernorCabinetWindow(QMainWindow):
         except Exception:
             pass
 
-    def _on_item_editor_interaction(self, row: int, le: QLineEdit):
+    def _on_item_editor_interaction(self, row, le):
         """Called on focus/click/typing to force suggestions popup."""
         try:
             self._active_item_editor = le
+            self._popup_active_editor = le # Track for custom popup
+            
+            # Show all suggestions or filtered?
+            # User wants "suggestions menu", usually filtered by input
+            text = le.text()
+            self._show_suggestions_for_editor(le, text)
         except Exception:
             pass
+
+    def _show_suggestions_for_editor(self, le, text):
+        """Filters completion list and shows custom popup."""
+        if not hasattr(self, '_suggestions_popup') or not self._suggestions_popup:
+            return
+
+        # Get all candidates
+        all_items = []
         try:
-            self.on_item_text_changed(row, le.text())
+            if self._items_completer_model:
+                all_items = self._items_completer_model.stringList()
         except Exception:
             pass
+
+        if not all_items:
+            self._suggestions_popup.hide()
+            return
+            
+        # Filter logic
+        filtered = []
+        clean_text = text.strip().lower() 
+        if not clean_text:
+            # Show all/recent? Or maybe top 20
+            filtered = all_items
+        else:
+            for item in all_items:
+                if clean_text in item.lower():
+                    filtered.append(item)
+                    
+        # Limit results if too many
+        filtered = filtered[:50] 
+        
+        if filtered:
+            self._suggestions_popup.show_suggestions(filtered, le)
+        else:
+            self._suggestions_popup.hide()
 
     def toggle_type(self, row, btn):
         # Toggle type state and reuse _apply_type_state to keep visuals consistent
@@ -1333,13 +899,13 @@ class GovernorCabinetWindow(QMainWindow):
             if not hasattr(self, 'trans_table'):
                 return
 
-            # If called by signal, find the row
+            # If called by signal, find the row - use object sender to be safe
             target_row = row
             sender = self.sender()
             
             # If recalculating from signal
-            if sender and isinstance(sender, (QSpinBox, QDoubleSpinBox)):
-                 # Find which row this sender belongs to
+            if sender and isinstance(sender, QAbstractSpinBox):
+                 # Find which row this sender belongs to robustly
                 found_sender = False
                 for r in range(self.trans_table.rowCount()):
                     # Check columns 4 (Qty) and 5 (Price)
@@ -1347,17 +913,17 @@ class GovernorCabinetWindow(QMainWindow):
                     container_qty = self.trans_table.cellWidget(r, 4)
                     container_price = self.trans_table.cellWidget(r, 5)
                     
-                    if container_qty and sender in container_qty.findChildren((QSpinBox, QDoubleSpinBox)):
+                    if container_qty and sender in container_qty.findChildren(QAbstractSpinBox):
                         target_row = r
                         found_sender = True
                         break
-                    if container_price and sender in container_price.findChildren((QSpinBox, QDoubleSpinBox)):
+                    if container_price and sender in container_price.findChildren(QAbstractSpinBox):
                         target_row = r
                         found_sender = True
                         break
                 
                 if found_sender:
-                     target_row = r # Correctly capture the row
+                     target_row = r 
             
             # Check logic based on Type
             container_type = self.trans_table.cellWidget(target_row, 2)
@@ -1365,26 +931,35 @@ class GovernorCabinetWindow(QMainWindow):
             if container_type:
                  btn = container_type.findChild(QPushButton)
                  if btn:
-                     is_income = btn.property("is_income")
+                     try:
+                        is_income = bool(btn.property("is_income"))
+                     except Exception:
+                        pass
 
             container_qty = self.trans_table.cellWidget(target_row, 4)
             container_price = self.trans_table.cellWidget(target_row, 5)
             sum_item = self.trans_table.item(target_row, 6) 
             
-            if container_price and sum_item:
-                price_widgets = container_price.findChildren((QSpinBox, QDoubleSpinBox))
-                price = price_widgets[0].value() if price_widgets else 0
+            price = 0
+            if container_price:
+                price_widgets = container_price.findChildren(QAbstractSpinBox)
+                # Look for spinning box inside container
+                if price_widgets:
+                    price = price_widgets[0].value()
 
-                if is_income:
-                    # Income: Sum = Price (Quantity ignored/hidden); show plus sign
-                    total = int(price)
-                else:
-                    # Expense: Sum = Price * Qty and should be negative
-                    qty_widgets = container_qty.findChildren((QSpinBox, QDoubleSpinBox)) if container_qty else []
-                    qty = qty_widgets[0].value() if qty_widgets else 0
-                    total = int(qty * price) * -1
+            if is_income:
+                # Income: Sum = Price (Quantity ignored/hidden); show plus sign
+                total = int(price)
+            else:
+                # Expense: Sum = Price * Qty and should be negative
+                qty = 0
+                if container_qty:
+                    qty_widgets = container_qty.findChildren(QAbstractSpinBox)
+                    if qty_widgets:
+                        qty = qty_widgets[0].value()
+                total = int(qty * price) * -1
 
-                # Set display with formatting (dots, $ and sign for income/expense)
+            if sum_item:
                 sum_item.setText(_format_display_amount(total))
         except Exception:
             pass
@@ -1410,27 +985,10 @@ class GovernorCabinetWindow(QMainWindow):
         self.items_table.insertRow(row_idx)
         self.items_table.setRowHeight(row_idx, 50) 
         
-        btn_add = QPushButton("+")
-        btn_add.setStyleSheet("""
-            QPushButton {
-                background-color: transparent; 
-                font-size: 24px; 
-                font-weight: bold; 
-                color: #4aa3df; 
-                border: 1px dashed #404040; 
-                border-radius: 8px;
-                margin: 0px;
-                padding: 0px;
-            }
-            QPushButton:hover {
-                background-color: #252525;
-            }
-        """)
-        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_add = create_plus_button(self.add_new_item_row)
+        
         self.items_table.setSpan(row_idx, 0, 1, 3) # Span all 3 columns
         self.items_table.setCellWidget(row_idx, 0, btn_add)
-        
-        btn_add.clicked.connect(self.add_new_item_row)
 
     def add_new_item_row(self):
         plus_row_index = self.items_table.rowCount() - 1 
@@ -1467,53 +1025,19 @@ class GovernorCabinetWindow(QMainWindow):
         self.items_table.setCellWidget(row, 0, container_name)
 
         # 1. Base Price (Integer SpinBox)
-        # Using a container for centering exactly like left table used for prices
-        price_spin = NoScrollSpinBox()
-        price_spin.setRange(0, 1000000000)
-        price_spin.setPrefix("$")
-        price_spin.setValue(0)
-        price_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        price_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons) # Cleaner look? Or keep default
-        
-        container_price = QWidget()
-        layout_price = QHBoxLayout(container_price)
-        layout_price.setContentsMargins(0,0,0,0)
-        layout_price.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout_price.addWidget(price_spin)
+        # Use helper for centered spinbox
+        container_price = create_centered_spinbox(value=0, prefix="$", min_val=0, max_val=1000000000, 
+                                                  on_change=lambda: self.sync_all_data())
         self.items_table.setCellWidget(row, 1, container_price)
 
         # 2. Delete Button
-        del_btn = QPushButton("🧹")
-        del_btn.setFixedSize(30, 30) 
-        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        del_btn.setStyleSheet("background: transparent; border: none; font-size: 16px; color: white;")
-        del_btn.clicked.connect(lambda: self.delete_item_row_by_widget(del_btn))
-
-        container_del = QFrame()
-        container_del.setFrameShape(QFrame.Shape.Box)
-        container_del.setStyleSheet("""
-            QFrame {
-                border: 2px solid #ff5555; 
-                border-radius: 4px;
-                background-color: #ff5555;
-            }
-            QFrame:hover {
-                background-color: #ff7777;
-                border: 2px solid #ff7777;
-            }
-        """)
-        container_del.setLayout(QVBoxLayout())
-        container_del.layout().setContentsMargins(0, 0, 0, 0)
-        container_del.layout().setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        del_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        container_del.layout().addWidget(del_btn)
+        # Use helper for delete button
+        container_del = create_delete_button(lambda btn: self.delete_item_row_by_widget(btn))
         
         self.items_table.setCellWidget(row, 2, container_del)
         
         # Connect signals for immediate sync
         name_edit.textChanged.connect(self.sync_all_data)
-        price_spin.valueChanged.connect(self.sync_all_data)
         
         self.sync_all_data() # Sync on adding new item row
 
@@ -1835,24 +1359,25 @@ class GovernorCabinetWindow(QMainWindow):
         """
         try:
             self._importing = True
+            
+            # Disable updates to prevent flickering and improve performance
+            try:
+                self.trans_table.setUpdatesEnabled(False)
+                self.items_table.setUpdatesEnabled(False)
+            except Exception:
+                pass
+
             # Apply objects sheet to items_table (replace content)
             objs = fetched.get('objects')
             if objs:
                 # First row may be headers
                 rows = objs[1:] if len(objs) > 1 else []
-                # If objects payload equals last exported objects, skip applying to avoid echo
-                try:
-                    objs_payload = objs
-                    h_objs = hashlib.md5(repr(objs_payload).encode('utf-8')).hexdigest()
-                    if h_objs == self._last_export_hash.get('objects'):
-                        rows = []
-                except Exception:
-                    pass
                 # Clear items_table and ensure '+' row exists
                 self.items_table.setRowCount(0)
                 self.add_item_plus_row()
                 # Recreate rows (each add_new_item_row inserts before the + row)
                 for r in rows:
+                    if not r: continue # Skip empty rows
                     # Expecting [Item Name, Base Price]
                     name = r[0] if len(r) > 0 else ""
                     price = 0
@@ -1880,14 +1405,12 @@ class GovernorCabinetWindow(QMainWindow):
             if stats:
                 # Rows after header
                 rows = stats[1:] if len(stats) > 1 else []
-                # If stats payload equals last exported stats, skip applying to avoid echo
+                # Use a looser check or just log to debug why it's skipping
                 try:
-                    stats_payload_full = stats
-                    h_stats = hashlib.md5(repr(stats_payload_full).encode('utf-8')).hexdigest()
-                    if h_stats == self._last_export_hash.get('stats'):
-                        rows = []
+                     print(f"DEBUG: Processing stats with {len(rows)} rows from import.")
                 except Exception:
-                    pass
+                     pass
+
                 # Clear transactions and add + row
                 self.trans_table.setRowCount(0)
                 self.add_plus_row()
@@ -1951,26 +1474,28 @@ class GovernorCabinetWindow(QMainWindow):
                         if le:
                             le.setText(item_txt)
 
-                    # Qty/Price
+                    # Qty/Price - delegation to _apply_type_state handles visibility
                     c_qty = self.trans_table.cellWidget(idx, 4)
                     if c_qty:
-                        sp_list = c_qty.findChildren(QSpinBox)
+                        sp_list = c_qty.findChildren(QAbstractSpinBox)
                         sp = sp_list[0] if sp_list else None
-                        if is_income_flag:
-                            c_qty.setVisible(False)
-                            if sp:
-                                sp.setEnabled(False)
-                        else:
-                            c_qty.setVisible(True)
-                            if sp:
-                                sp.setEnabled(True)
-                                sp.setValue(qty_val)
+                        
+                        # Just set value here, visibility is handled by _apply_type_state below
+                        if sp:
+                             try:
+                                 sp.setValue(qty_val)
+                             except Exception:
+                                 pass
 
                     c_price = self.trans_table.cellWidget(idx, 5)
                     if c_price:
-                        sp = c_price.findChild(QSpinBox)
+                        sp_list = c_price.findChildren(QAbstractSpinBox)
+                        sp = sp_list[0] if sp_list else None
                         if sp:
-                            sp.setValue(price_val)
+                            try:
+                                sp.setValue(price_val)
+                            except Exception:
+                                pass
 
                     # Sum
                     item_sum = self.trans_table.item(idx, 6)
@@ -1989,6 +1514,7 @@ class GovernorCabinetWindow(QMainWindow):
 
                 # Force update all row type states to be safe
                 for r in range(self.trans_table.rowCount() - 1):
+                    # Re-apply state to ensure correct visibility
                     c_type = self.trans_table.cellWidget(r, 2)
                     is_inc = False
                     if c_type:
@@ -2012,6 +1538,16 @@ class GovernorCabinetWindow(QMainWindow):
         except Exception as e:
             print(f"Failed to apply imported data: {e}")
         finally:
+            # Re-enable updates
+            try:
+                self.trans_table.setUpdatesEnabled(True)
+                self.items_table.setUpdatesEnabled(True)
+                self.trans_table.viewport().update()
+                self.items_table.viewport().update()
+                self.trans_table.setEnabled(True)
+                self.items_table.setEnabled(True)
+            except Exception:
+                pass
             self._importing = False
 
     def load_remote_sheets(self):
@@ -2044,20 +1580,20 @@ class GovernorCabinetWindow(QMainWindow):
         if not btn:
             return
 
-        # keep property synced
-        try:
-            btn.setProperty('is_income', bool(is_income))
-        except Exception:
+        # Explicit check before setting property or changing styles
+        current_state = bool(btn.property('is_income') or False)
+        
+        # force_update ensures we apply styles even if logic thinks it's same
+        if not force_update and current_state == is_income:
+            # But we must check qty visibility!
             pass
-
-        # Hard reset style that might hide text after import/polish
+        
         try:
-            btn.setStyleSheet("")
+             btn.setProperty('is_income', bool(is_income))
         except Exception:
-            pass
+             pass
 
-        btn.setFixedSize(30, 30)
-        btn.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        # Update button appearance
         if is_income:
             btn.setText("+")
             btn.setStyleSheet(
@@ -2069,51 +1605,19 @@ class GovernorCabinetWindow(QMainWindow):
                 "QPushButton { background-color: #ff5555; color: #ffffff; border-radius: 4px; font-weight: bold; font-size: 16px; border: none; padding: 0px; }"
             )
 
-        # Force immediate redraw (import case: widget exists but text not painted until interaction)
-        try:
-            btn.show()
-            btn.setVisible(True)
-            btn.repaint()
-            btn.update()
-        except Exception:
-            pass
-
         # Handle visibility of Quantity depending on type
         w_qty = self.trans_table.cellWidget(row, 4)
         if w_qty:
             try:
-                # show/hide whole widget cell
+                # Use QWidget.setVisible to toggle the entire cell widget
                 if is_income:
-                    w_qty.setVisible(False)
-                    # reset qty to 0
-                    spin = w_qty.findChild((QSpinBox, QDoubleSpinBox, NoScrollSpinBox))
-                    if spin:
-                        try:
-                            spin.setValue(0)
-                        except Exception:
-                            pass
+                    if w_qty.isVisible():
+                        w_qty.setVisible(False)
                 else:
-                    w_qty.setVisible(True)
+                    if not w_qty.isVisible():
+                        w_qty.setVisible(True)
             except Exception:
                 pass
-
-        # 5. Hide any popup if Income
-        if is_income:
-            try:
-                if getattr(self, '_item_popup', None):
-                    try:
-                        self._item_popup.close()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        # Force repaint to ensure button text is shown correctly
-        try:
-            btn.update()
-            btn.repaint()
-        except Exception:
-            pass
 
     def on_manual_import_click(self):
         """Handle manual import button click with queue check and delay."""
@@ -2163,6 +1667,8 @@ class GovernorCabinetWindow(QMainWindow):
         try:
             self.trans_table.setEnabled(False)
             self.items_table.setEnabled(False)
+            self.trans_table.setUpdatesEnabled(False)
+            self.items_table.setUpdatesEnabled(False)
         except Exception:
             pass
 
@@ -2186,6 +1692,10 @@ class GovernorCabinetWindow(QMainWindow):
 
     def _finish_overlay(self):
         try:
+            self.trans_table.setUpdatesEnabled(True)
+            self.items_table.setUpdatesEnabled(True)
+            self.trans_table.viewport().update()
+            self.items_table.viewport().update()
             self.trans_table.setEnabled(True)
             self.items_table.setEnabled(True)
         except Exception:
@@ -2194,6 +1704,7 @@ class GovernorCabinetWindow(QMainWindow):
             self._loading_overlay.hideOverlay()
         except Exception:
             pass
+        self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def update_totals(self):
         """Recompute totals for header labels: income, expense, balance."""
@@ -2306,59 +1817,15 @@ class GovernorCabinetWindow(QMainWindow):
             pass
 
     def on_item_text_changed(self, row, text):
-        """If text matches an item name, auto-fill price. Show custom popup."""
-        try:
-            cont_type = self.trans_table.cellWidget(row, 2)
-            if cont_type:
-                btn = cont_type.findChild(QPushButton)
-                if btn and btn.property("is_income"):
-                    return
-
-            # refresh items each time
-            items = list(self._items_map().keys())
-            w_item = self.trans_table.cellWidget(row, 3)
-            if not w_item:
-                return
-            le = w_item.findChild(QLineEdit)
-            if not le:
-                return
-
-            # exact match
-            if text in items:
-                self.on_item_selected(row, text)
-                if getattr(self, "_item_popup", None):
-                    try:
-                        self._item_popup.close()
-                    except Exception:
-                        pass
-                    self._item_popup = None
-                return
-
-            # close stale popup
-            try:
-                if getattr(self, "_item_popup", None):
-                    try:
-                        self._item_popup.close()
-                    except Exception:
-                        pass
-                    self._item_popup = None
-            except Exception:
-                pass
-
-            if not items:
-                return
-
-            # show popup immediately (even for empty text)
-            self._item_popup = ItemPickerPopup(items, parent=self, on_select=lambda t, r=row: self._on_popup_pick(r, w_item, t))
-            self._item_popup.filter(text or "")
-            # suppress global auto-close while popup is being shown
-            try:
-                self._suppress_global_close_until = time.time() + 0.25
-            except Exception:
-                pass
-            self._item_popup.show_at_widget(le)
+        try: 
+             # Also trigger popup update if focused
+             if getattr(self, '_active_item_editor', None) and self._active_item_editor.hasFocus():
+                 self._show_suggestions_for_editor(self._active_item_editor, text)
+                 self._popup_active_editor = self._active_item_editor
         except Exception:
-            pass
+             pass
+
+        self.sync_all_data()
 
     def _on_popup_pick(self, row, widget_container, text):
         le = widget_container.findChild(QLineEdit)
@@ -2444,14 +1911,27 @@ class GovernorCabinetWindow(QMainWindow):
                     pass
         except Exception:
             pass
+    
+    def _on_suggestion_selected(self, text):
+        """Callback when an item is chosen from the custom popup."""
+        if self._popup_active_editor:
+            try:
+                self._popup_active_editor.setText(text)
+                # optionally trigger updates
+                row = self._popup_active_editor.property('trans_row')
+                if row is not None:
+                    self.on_item_text_changed(row, text)
+            except Exception:
+                pass
+        
+        try:
+             self._suggestions_popup.hide()
+        except:
+             pass
 
     def eventFilter(self, source, event):
         # First, existing eventFilter logic used for QLineEdit interactions
         try:
-            # Do not trigger popup when suppressed (prevent immediate reopen after selection)
-            if getattr(self, '_suppress_popup', False):
-                return super().eventFilter(source, event)
-
             if isinstance(source, QLineEdit):
                 row_prop = source.property('trans_row')
                 row = int(row_prop) if row_prop is not None else None
@@ -2530,7 +2010,7 @@ class GovernorCabinetWindow(QMainWindow):
                     pass
         except Exception:
             pass
-
+        
         return super().eventFilter(source, event)
 
     def _ensure_delete_widget_for_row(self, row):
@@ -2544,32 +2024,9 @@ class GovernorCabinetWindow(QMainWindow):
         except Exception:
             cont = None
 
-        # Create delete button container similar to add_new_transaction_row
-        del_btn = QPushButton()
-        del_btn.setText("\ud83e\uddf9")
-        del_btn.setFixedSize(30, 30)
-        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        del_btn.setStyleSheet("background: transparent; border: none; font-size: 16px; color: white;")
-        del_btn.clicked.connect(lambda: self.delete_row_by_widget(del_btn))
-
-        container_del = QFrame()
-        container_del.setFrameShape(QFrame.Shape.Box)
-        container_del.setStyleSheet("""
-            QFrame {
-                border: 2px solid #ff5555; 
-                border-radius: 4px;
-                background-color: #ff5555;
-            }
-            QFrame:hover {
-                background-color: #ff7777; /* Lighter red on hover */
-                border: 2px solid #ff7777;
-            }
-        """)
-        container_del.setLayout(QVBoxLayout())
-        container_del.layout().setContentsMargins(0, 0, 0, 0)
-        container_del.layout().setAlignment(Qt.AlignmentFlag.AlignCenter)
-        del_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        container_del.layout().addWidget(del_btn)
+        # Create delete button container using helper
+        container_del = create_delete_button(lambda btn: self.delete_row_by_widget(btn))
+        
         try:
             self.trans_table.setCellWidget(row, 7, container_del)
         except Exception:
@@ -2588,3 +2045,33 @@ class GovernorCabinetWindow(QMainWindow):
             return
         self._auto_loaded_once = True
         self._start_import_with_overlay()
+
+    def show_calendar_popup(self, sender_widget):
+        """Standard calendar popup for the date button."""
+        # This was missing after refactor if it was removed or renamed
+        cal_widget = CustomCalendarWidget(parent=None)
+        cal_widget.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+
+        # Try to parse current date from button or default to current
+        try:
+            current_date_str = sender_widget.text()
+            current_date = QDate.fromString(current_date_str, "dd.MM.yyyy")
+            if current_date.isValid():
+                cal_widget.setSelectedDate(current_date)
+            else:
+                cal_widget.setSelectedDate(QDate.currentDate())
+        except Exception:
+            cal_widget.setSelectedDate(QDate.currentDate())
+
+        def on_date_selected(qdate):
+            sender_widget.setText(qdate.toString("dd.MM.yyyy"))
+            cal_widget.close()
+            # Trigger sync if needed
+            self.sync_all_data()
+
+        cal_widget.date_selected.connect(on_date_selected)
+
+        # Position the popup
+        pos = sender_widget.mapToGlobal(QPoint(0, sender_widget.height()))
+        cal_widget.move(pos)
+        cal_widget.show()
