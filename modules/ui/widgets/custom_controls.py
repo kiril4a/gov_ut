@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QCalendarWidget, QToolButton, QSpinBox, 
                              QAbstractSpinBox, QMenu, QWidget, QDateEdit, 
                              QDoubleSpinBox, QComboBox, QFrame, QListWidget, 
-                             QVBoxLayout, QListWidgetItem, QApplication, QAbstractItemView, QHeaderView)
+                             QVBoxLayout, QListWidgetItem, QApplication, QAbstractItemView, QHeaderView, QLineEdit, QHBoxLayout)
 from PyQt6.QtCore import Qt, QLocale, QRect, QPoint, QDate, QEvent, QPointF, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QMouseEvent, QKeyEvent
 
@@ -195,6 +195,82 @@ class CustomCalendarWidget(QCalendarWidget):
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(date.day()))
         painter.restore()
 
+class RangeCalendarWidget(CustomCalendarWidget):
+    """Calendar that supports selecting a date range by two clicks.
+    First click sets the range start, second click sets the range end and emits
+    range_selected(start_qdate, end_qdate).
+    """
+    range_selected = pyqtSignal(object, object)  # (QDate start, QDate end)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.range_start = None
+        self.range_end = None
+        self._awaiting_second = False
+        # connect click
+        try:
+            self.clicked.connect(self._on_clicked)
+        except Exception:
+            pass
+
+    def _on_clicked(self, qdate):
+        try:
+            if not self._awaiting_second:
+                # start selection
+                self.range_start = qdate
+                self.range_end = None
+                self._awaiting_second = True
+                # visually select the start to make it clear
+                try:
+                    self.setSelectedDate(qdate)
+                except Exception:
+                    pass
+                self.update()
+            else:
+                # finish selection
+                start = self.range_start or qdate
+                end = qdate
+                if end < start:
+                    start, end = end, start
+                self.range_start = start
+                self.range_end = end
+                self._awaiting_second = False
+                try:
+                    self.setSelectedDate(end)
+                except Exception:
+                    pass
+                self.update()
+                # emit signal
+                try:
+                    self.range_selected.emit(start, end)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def paintCell(self, painter, rect, date):
+        # Draw range background first (so numbers/selection are visible on top)
+        try:
+            if self.range_start and self.range_end:
+                if self.range_start <= date <= self.range_end:
+                    painter.save()
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(74, 163, 223, 60))  # translucent blue
+                    r = QRect(rect.left() + 1, rect.top() + 1, rect.width() - 2, rect.height() - 2)
+                    painter.drawRoundedRect(r, 6, 6)
+                    painter.restore()
+        except Exception:
+            pass
+        # Call parent to draw text/selection
+        try:
+            super().paintCell(painter, rect, date)
+        except Exception:
+            # If parent fails, at least draw the day number
+            painter.save()
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(date.day()))
+            painter.restore()
+
 class DateEditClickable(QDateEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -229,6 +305,139 @@ class DateEditClickable(QDateEdit):
         else:
              super().keyPressEvent(event)
 
+class DateRangeEdit(QWidget):
+    """A compact widget that shows a date range and opens a RangeCalendarWidget popup
+    to select the interval via two clicks (start and end).
+    """
+    range_changed = pyqtSignal(object, object)  # start_qdate, end_qdate
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._start = None
+        self._end = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._edit = QLineEdit(self)
+        self._edit.setReadOnly(True)
+        self._edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._edit.setMinimumWidth(220)
+        layout.addWidget(self._edit)
+        # Install event filter so clicks on the read-only line edit open the popup
+        try:
+            self._edit.installEventFilter(self)
+        except Exception:
+            pass
+
+        # Popup (created lazily)
+        self._popup = None
+
+        # default to current month
+        try:
+            cur = QDate.currentDate()
+            start = QDate(cur.year(), cur.month(), 1)
+            end = start.addMonths(1).addDays(-1)
+            self.setRange(start, end)
+        except Exception:
+            pass
+
+        # Install event filter for the inner QLineEdit
+        self._edit.installEventFilter(self)
+
+    def mousePressEvent(self, event):
+        try:
+            self.showPopup()
+        except Exception:
+            pass
+        return super().mousePressEvent(event)
+
+    def showPopup(self):
+        try:
+            if self._popup and self._popup.isVisible():
+                return
+            # Create popup
+            self._popup = QFrame(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+            self._popup.setStyleSheet("background-color: #2b2b2b; border: 1px solid #404040; border-radius: 8px;")
+            v = QVBoxLayout(self._popup)
+            v.setContentsMargins(8, 8, 8, 8)
+            self._range_cal = RangeCalendarWidget(self._popup)
+            # initialize if we have a range
+            try:
+                if self._start and self._end:
+                    # show currently selected range on calendar
+                    self._range_cal.range_start = self._start
+                    self._range_cal.range_end = self._end
+                    try:
+                        self._range_cal.setSelectedDate(self._end)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            v.addWidget(self._range_cal)
+
+            # connect
+            try:
+                self._range_cal.range_selected.connect(self._on_range_selected)
+            except Exception:
+                pass
+
+            pos = self.mapToGlobal(QPoint(0, self.height()))
+            self._popup.move(pos)
+            self._popup.show()
+        except Exception:
+            pass
+
+    def _on_range_selected(self, start, end):
+        try:
+            self.setRange(start, end)
+            try:
+                if self._popup:
+                    self._popup.close()
+            except Exception:
+                pass
+            try:
+                self.range_changed.emit(start, end)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def setRange(self, start: QDate, end: QDate):
+        try:
+            if start and end and end < start:
+                start, end = end, start
+            self._start = start
+            self._end = end
+            if start and end:
+                self._edit.setText(f"{start.toString('dd.MM.yyyy')} — {end.toString('dd.MM.yyyy')}")
+            else:
+                self._edit.setText("")
+        except Exception:
+            pass
+
+    def dateRange(self):
+        return (self._start, self._end)
+
+    def startDate(self):
+        return self._start
+
+    def endDate(self):
+        return self._end
+
+    def eventFilter(self, source, event):
+        # Open popup when user clicks the read-only line edit
+        try:
+            if source == self._edit and event.type() == QEvent.Type.MouseButtonPress:
+                try:
+                    self.showPopup()
+                except Exception:
+                    pass
+                return True
+        except Exception:
+            pass
+        return super().eventFilter(source, event)
+
 # Custom widgets that ignore mouse wheel events
 class NoScrollSpinBox(QSpinBox):
     def wheelEvent(self, event):
@@ -241,201 +450,3 @@ class NoScrollDoubleSpinBox(QDoubleSpinBox):
 class NoScrollComboBox(QComboBox):
     def wheelEvent(self, event):
         event.ignore()
-
-class ItemPickerPopup(QFrame):
-    """Lightweight suggestion popup implemented with QListWidget.
-    Styled dark, rounded, larger and closes when focus/window deactivates.
-    """
-    def __init__(self, items, parent=None, on_select=None):
-        # Create as top-level popup (no parent) so it floats above main window reliably
-        super().__init__(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self._owner = parent
-        self.on_select = on_select
-        self._items = list(items)
-
-        # Dark, rounded, larger styling
-        self.setStyleSheet('''
-            QFrame { background-color: #232323; border: 1px solid #3a3a3a; border-radius: 12px; }
-            QListWidget { background: transparent; border: none; padding: 10px; }
-            QListWidget::item { color: #f2f2f2; padding: 8px 12px; font-size: 14px; border-radius: 8px; }
-            QListWidget::item:hover { background-color: #3a3a3a; color: #ffffff; }
-            QListWidget::item:selected { background-color: #3a3a3a; }
-        ''')
-
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(8, 8, 8, 8)
-        self.layout.setSpacing(0)
-
-        self.list = QListWidget(self)
-        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.list.setSelectionMode(self.list.SingleSelection)
-        self.list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.list.itemClicked.connect(self._on_item_clicked)
-        self.layout.addWidget(self.list)
-
-        self.rebuild(items)
-
-    def focusOutEvent(self, event):
-        # close when popup loses focus (e.g., user switches to browser)
-        try:
-            self.close()
-        except Exception:
-            pass
-        return super().focusOutEvent(event)
-
-    def event(self, e):
-        # Close on window deactivation (alt-tab, switch app)
-        try:
-            if e.type() == QEvent.Type.WindowDeactivate:
-                try:
-                    self.close()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return super().event(e)
-
-    def rebuild(self, items):
-        self._items = list(items)
-        self.list.clear()
-        for it in self._items:
-            li = QListWidgetItem(it)
-            self.list.addItem(li)
-        # increase width for larger appearance
-        self.setFixedWidth(380)
-        self._clamp_height()
-
-    def _clamp_height(self):
-        count = self.list.count()
-        max_visible = 9
-        item_h = 28
-        h = min(count, max_visible) * item_h + 20
-        self.setFixedHeight(h)
-
-    def filter(self, text):
-        txt = (text or '').lower().strip()
-        self.list.clear()
-        for it in self._items:
-            if not txt or txt in it.lower():
-                self.list.addItem(QListWidgetItem(it))
-        self._clamp_height()
-
-    def show_at_widget(self, widget):
-        # Compute global position from widget and clamp to screen so popup is visible
-        try:
-            local_point = widget.rect().bottomLeft()
-            # larger vertical offset for clear separation
-            p = widget.mapToGlobal(local_point + QPoint(0, 10))
-            try:
-                screen = QApplication.primaryScreen()
-                avail = screen.availableGeometry()
-                x = p.x()
-                y = p.y()
-                if x + self.width() > avail.x() + avail.width():
-                    x = max(avail.x(), avail.x() + avail.width() - self.width() - 8)
-                if y + self.height() > avail.y() + avail.height():
-                    y_alt = widget.mapToGlobal(widget.rect().topLeft()).y() - self.height() - 10
-                    if y_alt > avail.y():
-                        y = y_alt
-                    else:
-                        y = max(avail.y(), avail.y() + avail.height() - self.height() - 8)
-                self.move(QPoint(x, y))
-            except Exception:
-                self.move(p)
-        except Exception:
-            if getattr(self, '_owner', None):
-                try:
-                    p = self._owner.mapToGlobal(widget.rect().bottomLeft() + QPoint(0, 10))
-                    self.move(p)
-                except Exception:
-                    pass
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        self.show()
-        try:
-            if self.list.count() > 0:
-                self.list.setCurrentRow(0)
-            self.list.setFocus()
-        except Exception:
-            pass
-
-    def _on_item_clicked(self, item):
-        if callable(self.on_select):
-            self.on_select(item.text())
-        self.close()
-
-    def closeEvent(self, event):
-        # ensure no dangling reference
-        try:
-            if getattr(self, '_owner', None):
-                pass
-        except Exception:
-            pass
-        return super().closeEvent(event)
-
-class SuggestionsPopup(QListWidget):
-    """
-    Custom popup for suggestions.
-    - Shows suggestions below the input.
-    - Matches generic dark theme style.
-    """
-    suggestion_selected = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setMouseTracking(True)
-        # Style matches dark theme requirements
-        self.setStyleSheet("""
-            QListWidget { 
-                background: #232323; 
-                color: #f2f2f2; 
-                border: 1px solid #3a3a3a; 
-                border-radius: 6px; 
-                padding: 4px; 
-            }
-            QListWidget::item { 
-                padding: 8px 12px; 
-                border-radius: 4px; 
-                color: #f2f2f2;
-                margin-bottom: 2px;
-            }
-            QListWidget::item:hover { 
-                background: #3a3a3a; 
-            }
-            QListWidget::item:selected { 
-                background: #4aa3df; 
-                color: white; 
-            }
-        """)
-        self.itemClicked.connect(self._on_item_clicked)
-        # Hide horizontal scrollbar
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-    def show_suggestions(self, suggestions, target_widget):
-        self.clear()
-        if not suggestions:
-            self.hide()
-            return
-
-        for s in suggestions:
-            # Simple item add
-            QListWidgetItem(s, self)
-
-        # Calculate position and size
-        # Position below the target widget
-        global_pos = target_widget.mapToGlobal(QPoint(0, target_widget.height()))
-        
-        # Calculate needed height
-        row_height = 36 # approx height per item including padding
-        content_height = min(len(suggestions) * row_height + 10, 200) # Cap at 200px
-        
-        self.setGeometry(global_pos.x(), global_pos.y() + 4, target_widget.width(), content_height)
-        self.show()
-        self.raise_()
-
-    def _on_item_clicked(self, item):
-        if item:
-            self.suggestion_selected.emit(item.text())
-            self.hide()

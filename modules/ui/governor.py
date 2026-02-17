@@ -2,8 +2,8 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QFrame, QTableWidget,
                              QTableWidgetItem, QHeaderView, QDateEdit, QComboBox, 
                              QDoubleSpinBox, QSpinBox, QMessageBox, QGroupBox, QSizePolicy,
-                             QCalendarWidget, QToolButton, QMenu, QAbstractSpinBox, QStyle, QApplication, QStyleOptionComboBox, QStyleOptionSpinBox, QWidgetAction, QLineEdit, QScrollArea, QListWidget, QListWidgetItem, QCompleter)
-from PyQt6.QtCore import Qt, QDate, QEvent, QLocale, QRect, QPointF, QPoint, QSize, QTimer, QThread, pyqtSignal, QMutex, QStringListModel
+                             QCalendarWidget, QToolButton, QMenu, QAbstractSpinBox, QStyle, QApplication, QStyleOptionComboBox, QStyleOptionSpinBox, QWidgetAction, QLineEdit, QScrollArea, QListWidget, QListWidgetItem)
+from PyQt6.QtCore import Qt, QDate, QEvent, QLocale, QRect, QPointF, QPoint, QSize, QTimer, QThread, pyqtSignal, QMutex
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QMouseEvent, QKeyEvent
 import hashlib
 import time
@@ -12,10 +12,11 @@ from modules.core.utils import get_resource_path
 from modules.core.google_sheet_worker import GoogleSheetLoadThread, GoogleSheetSyncThread
 from modules.ui.loading_overlay import LoadingOverlay
 from modules.ui.scrollbar_styles import get_scrollbar_qss
-from modules.ui.widgets.custom_controls import (CustomCalendarWidget, DateEditClickable, 
-                             NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox, 
-                             ItemPickerPopup)
+from modules.ui.widgets.custom_controls import (CustomCalendarWidget, DateEditClickable, DateRangeEdit, 
+                             NoScrollSpinBox, NoScrollDoubleSpinBox, NoScrollComboBox)
+from modules.ui.widgets.item_picker_popup import ItemPickerPopup
 from modules.ui.widgets.suggestions_popup import SuggestionsPopup
+from modules.ui.widgets.simple_suggestions import SimpleSuggestionsPopup
 from modules.ui.widgets.table_helpers import (create_centered_spinbox, create_delete_button, 
                              create_date_button, create_plus_button)
 
@@ -317,8 +318,37 @@ class GovernorCabinetWindow(QMainWindow):
 
         self.items_table.setMinimumWidth(200)  # Set a smaller minimum width for the right table
         
+        # Avoid horizontal scrollbar and allow table to expand horizontally within the layout
+        try:
+            self.items_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.items_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        except Exception:
+            pass
+
         # Init items table with plus row
         self.init_items_table()
+
+        # Create minimal suggestions popup early so any callbacks during import/worker
+        # that call _show_suggestions_for_editor find the popup initialized.
+        try:
+            print("[Governor] Early creating SimpleSuggestionsPopup...")
+            self._suggestions_popup = SimpleSuggestionsPopup(self)
+            self._suggestions_popup.suggestion_selected.connect(self._on_suggestion_selected)
+            # Suppress immediate reopen when popup was just closed by outside click
+            try:
+                self._suggestions_popup.suggestion_closed.connect(self._on_suggestions_closed)
+            except Exception:
+                pass
+            # timestamp until which reopening is suppressed
+            self._suppress_reopen_until = 0
+            print("[Governor] SimpleSuggestionsPopup created early")
+        except Exception as e:
+            try:
+                import traceback
+                print(f"[Governor] Failed early create SimpleSuggestionsPopup: {e}\n" + traceback.format_exc())
+            except Exception:
+                print(f"[Governor] Failed early create SimpleSuggestionsPopup: {e}")
+            self._suggestions_popup = None
 
         # Ensure init_ui is called to initialize all UI components, including trans_table
         self.init_ui()
@@ -350,55 +380,14 @@ class GovernorCabinetWindow(QMainWindow):
         # Auto-import on first open
         QTimer.singleShot(0, self._auto_import_on_open)
 
-        # Initialize the shared custom suggestions popup
-        self._suggestions_popup = SuggestionsPopup(self)
-        self._suggestions_popup.suggestion_selected.connect(self._on_suggestion_selected)
-        
+        # suggestions popup was created earlier; log current state
+        try:
+            print("[Governor] suggestions_popup state after init:", getattr(self, '_suggestions_popup', None))
+        except Exception:
+            pass
+
         # Track which row editor triggered the popup
         self._popup_active_editor = None
-
-        # Shared completer model for item suggestions (robust alternative to custom popup)
-        try:
-            self._items_completer_model = QStringListModel()
-            self._items_completer = QCompleter(self._items_completer_model, self)
-            self._items_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            try:
-                self._items_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-            except Exception:
-                pass
-            self._items_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-            # Style the completer popup to match dark theme
-            try:
-                popup = self._items_completer.popup()
-                popup.setStyleSheet('''
-                    QListView { background: #232323; color: #f2f2f2; border: 1px solid #3a3a3a; border-radius: 10px; padding: 6px; }
-                    QListView::item { padding: 8px 12px; border-radius: 6px; }
-                    QListView::item:hover { background: #3a3a3a; }
-                    QListView::item:selected { background: #4aa3df; color: white; }
-                ''')
-            except Exception:
-                pass
-
-            # Ensure completer selection applies and closes popup
-            try:
-                self._items_completer.activated.connect(lambda text: self._on_completer_activated(text))
-            except Exception:
-                pass
-        except Exception:
-            self._items_completer = None
-            self._items_completer_model = None
-
-        # Install global event filter to close popups/completers on outside click
-        try:
-            app = QApplication.instance()
-            if app:
-                app.installEventFilter(self)
-                self._global_eventfilter_installed = True
-        except Exception:
-            self._global_eventfilter_installed = False
-
-        # suppression flag to avoid immediate reopen after selection
-        self._suppress_popup = False
 
     def closeEvent(self, event):
         if self.sync_worker:
@@ -420,38 +409,140 @@ class GovernorCabinetWindow(QMainWindow):
         header_layout.addStretch()
         
         stats_frame = QFrame()
-        stats_frame.setStyleSheet("border: 2px solid #555; border-radius: 8px; padding: 5px;")
+        # Single rounded container that holds all three metric labels (stacked)
+        stats_frame.setStyleSheet("background: transparent; border: none;")
         stats_layout = QHBoxLayout(stats_frame)
-        
+        stats_layout.setSpacing(8)
+
+        # Inner rounded box that contains the three metrics stacked vertically
+        metrics_box = QFrame()
+        metrics_box.setStyleSheet("background-color: #333333; border: 1px solid #404040; border-radius: 10px; padding: 8px;")
+        metrics_layout = QVBoxLayout(metrics_box)
+        metrics_layout.setContentsMargins(12, 8, 12, 8)
+        metrics_layout.setSpacing(8)
+        try:
+            metrics_box.setMinimumWidth(360)  # make wider so labels don't clip
+            metrics_box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        except Exception:
+            pass
+
+        # Create the three metric labels and style them consistently
         self.lbl_income = QLabel("Доходы: 0")
+        self.lbl_income.setStyleSheet("font-size: 14px; color: white;")
+        self.lbl_income.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self.lbl_expense = QLabel("Расходы: 0")
+        self.lbl_expense.setStyleSheet("font-size: 14px; color: white;")
+        self.lbl_expense.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         self.lbl_balance = QLabel("Баланс: 0")
-        for lbl in [self.lbl_income, self.lbl_expense, self.lbl_balance]:
-            lbl.setStyleSheet("font-size: 16px; font-weight: bold; padding: 0 10px; border: none;")
-            stats_layout.addWidget(lbl)
-            
+        self.lbl_balance.setStyleSheet("font-size: 14px; color: white;")
+        self.lbl_balance.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+
+        metrics_layout.addWidget(self.lbl_income)
+        metrics_layout.addWidget(self.lbl_expense)
+        metrics_layout.addWidget(self.lbl_balance)
+
+        stats_layout.addWidget(metrics_box)
+
         header_layout.addWidget(stats_frame)
-        
+
+        # ensure header has flexible spacing after metrics
         header_layout.addStretch()
-        
+
+        # Period + Sort combined into a single control: a tool button that shows range text
+        # and exposes a menu action to sort by date. The DateRangeEdit remains the range picker.
+        self.period_range = DateRangeEdit()
+        # Default to current month range
+        try:
+            cur = QDate.currentDate()
+            start = QDate(cur.year(), cur.month(), 1)
+            end = start.addMonths(1).addDays(-1)
+            self.period_range.setRange(start, end)
+        except Exception:
+            pass
+
+        # Create a tool button that displays the selected range and has a menu for actions
+        try:
+            btn_text = self.period_range._edit.text() if hasattr(self.period_range, '_edit') else 'Период'
+        except Exception:
+            btn_text = 'Период'
+
+        self.period_button = QToolButton()
+        self.period_button.setText(btn_text)
+        self.period_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        try:
+            # Clicking the main area opens the date range popup
+            self.period_button.clicked.connect(lambda: self.period_range.showPopup())
+        except Exception:
+            pass
+
+        # Create a menu with a single action: sort by date
+        try:
+            menu = QMenu(self)
+            act_sort = menu.addAction("Сортировать по дате")
+            act_sort.triggered.connect(lambda: self._sort_transactions_by_date(descending=False))
+            self.period_button.setMenu(menu)
+            # Use MenuButtonPopup so clicking the arrow shows the menu while clicking the button runs the main action
+            try:
+                self.period_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+            except Exception:
+                try:
+                    self.period_button.setPopupMode(QToolButton.MenuButtonPopup)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Update button text when range changes and refresh stats/hiding; also trigger sort
+        try:
+            def _on_range_changed(s, e):
+                try:
+                    txt = self.period_range._edit.text() if hasattr(self.period_range, '_edit') else ''
+                    self.period_button.setText(txt or 'Период')
+                except Exception:
+                    pass
+                try:
+                    # When range changes, update stats and hide/show rows as needed
+                    self.update_stats_table()
+                except Exception:
+                    pass
+                try:
+                    # Also sort visible rows automatically when range changed
+                    self._sort_transactions_by_date(descending=False)
+                except Exception:
+                    pass
+            self.period_range.range_changed.connect(_on_range_changed)
+        except Exception:
+            pass
+
         period_layout = QHBoxLayout()
-        period_layout.addWidget(QLabel("Период:"))
-        self.period_combo = QComboBox()
-        self.period_combo.addItems(["Текущий месяц", "Прошлый месяц", "Все время"])
-        period_layout.addWidget(self.period_combo)
+        period_layout.addWidget(self.period_button)
+        # The menu provides sort action, no separate sort button needed now
+
         header_layout.addLayout(period_layout)
-        
         header_layout.addSpacing(20)
 
         # Buttons container
         buttons_layout = QVBoxLayout()
         buttons_layout.setSpacing(5)
         buttons_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         btn_back = QPushButton("В лаунчер")
-        btn_back.setStyleSheet("background-color: #555; border: 1px solid #777;")
+        # Apply same style as Import button
+        btn_back.setStyleSheet("""
+            QPushButton {
+                background-color: #2a82da;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3a92ea;
+            }
+        """)
         btn_back.clicked.connect(self.return_to_launcher)
-        
+
         btn_import = QPushButton("Импорт")
         btn_import.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_import.setStyleSheet("""
@@ -471,9 +562,9 @@ class GovernorCabinetWindow(QMainWindow):
 
         buttons_layout.addWidget(btn_back)
         buttons_layout.addWidget(btn_import)
-        
+
         header_layout.addLayout(buttons_layout)
-        
+
         main_layout.addLayout(header_layout)
 
         content_layout = QHBoxLayout()
@@ -503,16 +594,26 @@ class GovernorCabinetWindow(QMainWindow):
         self.trans_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.trans_table.setColumnWidth(2, 40)
 
+        # Column 3 (Предмет) should never be truncated too small: give it a minimum
+        # width of 150 px and allow it to take remaining space (Stretch). Price and
+        # Sum columns are reduced so the name column can expand when needed.
         self.trans_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-
+        # Ensure an initial/minimum width so short windows don't truncate the name
+        try:
+            self.trans_table.setColumnWidth(3, 150)
+        except Exception:
+            pass
+ 
         self.trans_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.trans_table.setColumnWidth(4, 80) 
+        # Qty column slightly narrower
+        self.trans_table.setColumnWidth(4, 80)
         
+        # Price and Sum columns: make narrower so they yield space to the item name
         self.trans_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.trans_table.setColumnWidth(5, 150)
+        self.trans_table.setColumnWidth(5, 120)
         
         self.trans_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        self.trans_table.setColumnWidth(6, 150)
+        self.trans_table.setColumnWidth(6, 120)
 
         self.trans_table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
         self.trans_table.setColumnWidth(7, 50)
@@ -522,27 +623,20 @@ class GovernorCabinetWindow(QMainWindow):
         self.trans_table.verticalHeader().setDefaultSectionSize(45)
         self.trans_table.horizontalHeader().setDefaultSectionSize(40)
         self.trans_table.horizontalHeader().setMinimumSectionSize(40) 
-        
+        # Avoid horizontal scrollbar on transactions table; let columns resize instead
+        try:
+            self.trans_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.trans_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        except Exception:
+            pass
+         
         grp_trans_layout.addWidget(self.trans_table)
         
         self.init_trans_table()
 
         left_layout.addWidget(grp_trans)
         
-        grp_filter = QGroupBox("Фильтр по предметам")
-        filter_layout = QHBoxLayout(grp_filter)
-        self.filter_combo = QComboBox()
-        self.filter_combo.addItem("Все предметы")
-        filter_layout.addWidget(self.filter_combo)
-        
-        self.lbl_filter_qty = QLabel("Кол-во: 0")
-        self.lbl_filter_sum = QLabel("Сумма: 0")
-        filter_layout.addWidget(self.lbl_filter_qty)
-        filter_layout.addWidget(self.lbl_filter_sum)
-        
-        left_layout.addWidget(grp_filter)
-        
-        content_layout.addLayout(left_layout, stretch=7)
+        content_layout.addLayout(left_layout, stretch=3)
 
         right_layout = QVBoxLayout()
         
@@ -558,18 +652,75 @@ class GovernorCabinetWindow(QMainWindow):
         
         grp_stats = QGroupBox("Общая статистика по предметам")
         grp_stats_layout = QVBoxLayout(grp_stats)
-        
+
+        # Search input above the stats table
+        self.stats_search = QLineEdit()
+        self.stats_search.setPlaceholderText("Поиск по предмету")
+        self.stats_search.setStyleSheet("""
+            QLineEdit { background-color: white; color: black; border: 1px solid #555555; border-radius: 4px; padding: 4px; }
+        """)
+        self.stats_search.setMaximumHeight(30)
+        self.stats_search.textChanged.connect(lambda txt: self.update_stats_table(txt))
+        grp_stats_layout.addWidget(self.stats_search)
+
+        # Stats table: columns - Item, Qty, Avg price per unit, Total sum
         self.stats_table = QTableWidget()
-        self.stats_table.setColumnCount(3)
-        self.stats_table.setHorizontalHeaderLabels(["Предмет", "Количество", "Сумма"])
-        self.stats_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.stats_table.setColumnCount(4)
+        self.stats_table.setHorizontalHeaderLabels(["Предмет", "Кол-во", "За шт.", "Сумма"]) 
+        # Use Stretch resize mode so columns expand to fill available width and
+        # do not cause horizontal scroll. Set sensible minimum widths so small
+        # windows don't make columns too narrow.
+        for ci in range(4):
+            try:
+                self.stats_table.horizontalHeader().setSectionResizeMode(ci, QHeaderView.ResizeMode.Stretch)
+            except Exception:
+                pass
+        # Minimum widths (smaller to avoid overflow on narrow windows)
+        try:
+            self.stats_table.setColumnWidth(0, 100)  # Предмет
+            self.stats_table.setColumnWidth(1, 60)   # Кол-во
+            self.stats_table.setColumnWidth(2, 90)   # За шт.
+            self.stats_table.setColumnWidth(3, 90)   # Сумма
+        except Exception:
+            pass
+
+        self.stats_table.setShowGrid(False)
+        self.stats_table.verticalHeader().setVisible(False)
+        self.stats_table.verticalHeader().setDefaultSectionSize(40)
+        self.stats_table.horizontalHeader().setDefaultSectionSize(40)
+        self.stats_table.horizontalHeader().setMinimumSectionSize(40)
+        # Avoid horizontal scrollbar and allow table to expand horizontally within the layout
+        try:
+            self.stats_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.stats_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            # also ensure items table doesn't force extra width
+            self.items_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.items_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        except Exception:
+            pass
+
         grp_stats_layout.addWidget(self.stats_table)
-        
+
+        # Adjust stats table columns to fill available space proportionally
+        try:
+            self._adjust_stats_table_column_widths()
+        except Exception:
+            pass
+
         right_layout.addWidget(grp_stats, stretch=1)
         
-        content_layout.addLayout(right_layout, stretch=3)
+        # Right pane ~40% (use 2 in the 3:2 stretch ratio)
+        content_layout.addLayout(right_layout, stretch=2)
         
         main_layout.addLayout(content_layout)
+
+        # Schedule a deferred adjustment after the UI is shown to ensure
+        # table viewports have valid sizes — this prevents initial overflow
+        # where columns are sized before layout completes.
+        try:
+            QTimer.singleShot(0, lambda: self._adjust_stats_table_column_widths())
+        except Exception:
+            pass
 
     def return_to_launcher(self):
         if self.sync_worker:
@@ -666,8 +817,6 @@ class GovernorCabinetWindow(QMainWindow):
             QLineEdit:focus { border: 2px solid #4aa3df; }
         """)
         name_edit.setMinimumHeight(30)
-
-        # Removed QCompleter logic, using custom popup instead
         
         container_item = QWidget()
         layout_item = QHBoxLayout(container_item)
@@ -705,9 +854,18 @@ class GovernorCabinetWindow(QMainWindow):
                 pass
         name_edit.focusInEvent = _focus_in_mk2
 
-        name_edit.installEventFilter(self)
+        # Removing installation of the Governor as an event filter on the line edit.
+        # The global popup installs its own app-level filter; installing the window
+        # as an event filter on each editor caused focus/key handling oddities
+        # (prevented paste/focus-out in some configurations). Do not install here.
+        # name_edit.installEventFilter(self)
         name_edit.textChanged.connect(lambda txt, r=row: self.on_item_text_changed(r, txt))
-        # Do not use QCompleter here; suggestions handled by custom popup
+        # Adjust name column width when user types longer names so the name column
+        # grows (at expense of price/sum) but keeps a sensible minimum.
+        try:
+            name_edit.textChanged.connect(lambda txt, le=name_edit: self._adjust_name_column_for_editor(le))
+        except Exception:
+            pass
         
         # Use helpers for Qty and Price spinboxes
         qty_block = create_centered_spinbox(value=0, min_val=-999999, max_val=999999, on_change=lambda: self.recalc_row(row))
@@ -740,6 +898,7 @@ class GovernorCabinetWindow(QMainWindow):
         self.recalc_row(row)
         # Trigger sync on change
         self.sync_all_data()
+        self.update_stats_table()
 
         # Re-enable updates
         try:
@@ -749,53 +908,321 @@ class GovernorCabinetWindow(QMainWindow):
             pass
 
     def _on_item_editor_interaction(self, row, le):
-        """Called on focus/click/typing to force suggestions popup."""
+        """Called on focus/click/typing to show suggestions immediately (minimal).
+        Uses a short debounce so rapid focus/text events don't cause flicker
+        when the popup is repeatedly shown/hidden.
+        """
         try:
-            self._active_item_editor = le
-            self._popup_active_editor = le # Track for custom popup
-            
-            # Show all suggestions or filtered?
-            # User wants "suggestions menu", usually filtered by input
-            text = le.text()
-            self._show_suggestions_for_editor(le, text)
+            # Check suppression window to avoid immediate reopen after close
+            if time.time() < getattr(self, '_suppress_reopen_until', 0):
+                try:
+                    print("[Governor] Suppression active, skipping popup show")
+                except Exception:
+                    pass
+                return
+
+            # If popup already visible for this editor and query unchanged, skip
+            try:
+                popup_obj = getattr(self, '_suggestions_popup', None)
+                if popup_obj is not None:
+                    try:
+                        if popup_obj.isVisible() and getattr(popup_obj, '_target_widget', None) == le:
+                            # If text hasn't changed from last shown query, don't reshow
+                            last_q = getattr(self, '_last_suggestions_query', None)
+                            cur_q = (le.text() or '').strip().lower()
+                            if last_q == cur_q:
+                                try:
+                                    print('[Governor] popup already visible for editor with same query -> skip scheduling')
+                                except Exception:
+                                    pass
+                                return
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Remember active editor so selection callback can reference it
+            self._popup_active_editor = le
+
+            # Store pending parameters for debounced processing
+            try:
+                self._pending_suggestion_le = le
+                self._pending_suggestion_text = le.text()
+            except Exception:
+                self._pending_suggestion_le = le
+                self._pending_suggestion_text = ''
+
+            # Lazily create debounce timer
+            try:
+                if not hasattr(self, '_suggestions_debounce_timer') or self._suggestions_debounce_timer is None:
+                    self._suggestions_debounce_timer = QTimer(self)
+                    self._suggestions_debounce_timer.setSingleShot(True)
+                    self._suggestions_debounce_timer.timeout.connect(self._process_pending_suggestions)
+            except Exception:
+                self._suggestions_debounce_timer = None
+
+            # Start/Restart debounce (short delay to avoid flicker)
+            try:
+                if getattr(self, '_suggestions_debounce_timer', None):
+                    self._suggestions_debounce_timer.start(80)  # 80 ms debounce
+                else:
+                    # Fallback to immediate call
+                    self._process_pending_suggestions()
+            except Exception:
+                try:
+                    self._show_suggestions_for_editor(le, le.text())
+                except Exception:
+                    pass
         except Exception:
             pass
 
-    def _show_suggestions_for_editor(self, le, text):
-        """Filters completion list and shows custom popup."""
-        if not hasattr(self, '_suggestions_popup') or not self._suggestions_popup:
-            return
-
-        # Get all candidates
-        all_items = []
+    def _process_pending_suggestions(self):
+        """Called by debounce timer to show suggestions for the latest pending editor/text."""
         try:
-            if self._items_completer_model:
-                all_items = self._items_completer_model.stringList()
-        except Exception:
-            pass
+            # Check suppression window to avoid immediate reopen after close
+            if time.time() < getattr(self, '_suppress_reopen_until', 0):
+                try:
+                    print("[Governor] Suppression active, skipping popup show")
+                except Exception:
+                    pass
+                return
 
-        if not all_items:
-            self._suggestions_popup.hide()
-            return
-            
-        # Filter logic
-        filtered = []
-        clean_text = text.strip().lower() 
-        if not clean_text:
-            # Show all/recent? Or maybe top 20
-            filtered = all_items
-        else:
-            for item in all_items:
-                if clean_text in item.lower():
-                    filtered.append(item)
-                    
-        # Limit results if too many
-        filtered = filtered[:50] 
+            le = getattr(self, '_pending_suggestion_le', None)
+            text = getattr(self, '_pending_suggestion_text', '')
+            if le is not None:
+                try:
+                    self._show_suggestions_for_editor(le, text)
+                except Exception as e:
+                    print(f"[Governor] _process_pending_suggestions error: {e}")
+        except Exception as e:
+            print(f"[Governor] _process_pending_suggestions outer error: {e}")
         
-        if filtered:
-            self._suggestions_popup.show_suggestions(filtered, le)
-        else:
-            self._suggestions_popup.hide()
+    def _show_suggestions_for_editor(self, le, text):
+        """Minimal: get items from right table, filter by text and show popup.
+        Closes popup when there are no suggestions or editor is None.
+        """
+        try:
+            try:
+                print(f"[Governor] _show_suggestions_for_editor called. editor={le} text='{text}'")
+            except Exception:
+                pass
+
+            # Throttle repeated calls per-editor to avoid tight-loop show/hide which
+            # can prevent the editor from receiving key events.
+            try:
+                if not hasattr(self, '_suggestions_last_called'):
+                    self._suggestions_last_called = {}
+                eid = id(le) if le is not None else None
+                last = self._suggestions_last_called.get(eid)
+                now = time.time()
+                if last is not None and (now - last) < 0.05:
+                    try:
+                        print(f"[Governor] Throttling _show_suggestions_for_editor for editor={le}")
+                    except Exception:
+                        pass
+                    return
+                try:
+                    self._suggestions_last_called[eid] = now
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            popup_obj = getattr(self, '_suggestions_popup', None)
+            try:
+                print(f"[Governor] popup_obj repr={repr(popup_obj)} type={type(popup_obj)} id={(id(popup_obj) if popup_obj is not None else None)}")
+            except Exception:
+                pass
+
+            if le is None or popup_obj is None:
+                try:
+                    print("[Governor] No editor or suggestions_popup not initialized -> hide and return")
+                except Exception:
+                    pass
+                if popup_obj is not None:
+                    try:
+                        popup_obj.hide()
+                    except Exception:
+                        pass
+                return
+
+            # Source suggestions from items_table (right-hand table)
+            try:
+                items_map = self._items_map()
+                items = list(items_map.keys())
+                print(f"[Governor] items_map read, total items={len(items)}")
+            except Exception as e:
+                print(f"[Governor] Failed to read items_map: {e}")
+                items = []
+
+            if not items:
+                try:
+                    print("[Governor] No items available -> hiding popup")
+                except Exception:
+                    pass
+                try:
+                    popup_obj.hide()
+                except Exception:
+                    pass
+                return
+
+            query = (text or '').strip().lower()
+            if not query:
+                filtered = items.copy()
+            else:
+                filtered = [it for it in items if query in it.lower()]
+
+            try:
+                print(f"[Governor] filter query='{query}' -> {len(filtered)} matches")
+            except Exception:
+                pass
+
+            if filtered:
+                try:
+                    # Avoid re-showing repeatedly for same editor/query which can cause flicker
+                    last_q = getattr(self, '_last_suggestions_query', None)
+                    last_editor_id = getattr(self, '_last_suggestions_editor_id', None)
+                    cur_editor_id = id(le)
+                    is_vis = False
+                    try:
+                        is_vis = popup_obj.isVisible()
+                    except Exception:
+                        is_vis = False
+
+                    if is_vis and last_q == query and last_editor_id == cur_editor_id:
+                        try:
+                            print('[Governor] Popup already visible for same editor/query -> skip show')
+                        except Exception:
+                            pass
+                    else:
+                        # Record state before showing to prevent races that cause immediate re-show
+                        try:
+                            self._last_suggestions_query = query
+                            self._last_suggestions_editor_id = cur_editor_id
+                            self._last_suggestions_shown_at = time.time()
+                        except Exception:
+                            pass
+                        # Show popup; the popup itself will log its geometry when shown
+                        popup_obj.show_suggestions(filtered, le)
+                        # Ensure editor keeps keyboard focus: restore focus deferred and
+                        # suppress reopen briefly to avoid focus-in triggering another show.
+                        try:
+                            self._suppress_reopen_until = time.time() + 0.2
+                            try:
+                                print(f"[Governor] set suppress_reopen_until after show: {self._suppress_reopen_until}")
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                        # Intentionally do NOT force focus back to the editor here. Rely on
+                        # WA_ShowWithoutActivating on the popup and governor-side suppression
+                        # so the editor retains keyboard focus naturally.
+                        pass
+                except Exception as e:
+                    print(f"[Governor] Error showing suggestions popup: {e}")
+            else:
+                try:
+                    print("[Governor] No filtered suggestions -> hide popup")
+                except Exception:
+                    pass
+                try:
+                    popup_obj.hide()
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[Governor] Exception in _show_suggestions_for_editor: {e}")
+
+    def _on_suggestion_selected(self, text):
+        """Minimal handler when suggestion clicked: set text and apply selection logic."""
+        try:
+            try:
+                print(f"[Governor] _on_suggestion_selected called with text='{text}'")
+            except Exception:
+                pass
+
+            le = getattr(self, '_popup_active_editor', None)
+            try:
+                print(f"[Governor] popup_active_editor={le}")
+            except Exception:
+                pass
+
+            if isinstance(le, QLineEdit):
+                try:
+                    le.setText(text)
+                    print("[Governor] Set editor text from suggestion")
+                except Exception as e:
+                    print(f"[Governor] Failed to set editor text: {e}")
+                try:
+                    row_prop = le.property('trans_row')
+                    row = int(row_prop) if row_prop is not None else None
+                    print(f"[Governor] Editor trans_row property={row}")
+                except Exception as e:
+                    print(f"[Governor] Failed to get trans_row: {e}")
+                    row = None
+
+                if row is not None:
+                    try:
+                        self.on_item_selected(row, text)
+                        print("[Governor] on_item_selected called after suggestion pick")
+                    except Exception as e:
+                        print(f"[Governor] on_item_selected raised: {e}")
+            else:
+                try:
+                    print("[Governor] Active editor is not a QLineEdit - cannot apply suggestion")
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[Governor] Exception in _on_suggestion_selected: {e}")
+
+        try:
+            if getattr(self, '_suggestions_popup', None):
+                try:
+                    self._suggestions_popup.hide()
+                    print("[Governor] suggestions_popup hidden after selection")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _on_suggestions_closed(self, widget=None):
+        """Called when suggestions popup hides — set a short suppression so clicks/focus
+        that caused the close don't immediately reopen it.
+        If `widget` is provided, it is the widget that was clicked; set focus to it after a short delay.
+        """
+        try:
+            # Clear last shown query so reopen logic resets
+            try:
+                self._last_suggestions_query = None
+                self._last_suggestions_editor_id = None
+            except Exception:
+                pass
+
+            # Clear pending debounce so we don't show immediately
+            try:
+                self._pending_suggestion_le = None
+                self._pending_suggestion_text = ''
+            except Exception:
+                pass
+
+            # Set suppression window
+            try:
+                self._suppress_reopen_until = time.time() + 0.25  # suppress reopen for 250ms
+                try:
+                    print(f"[Governor] suggestions closed, suppress until {self._suppress_reopen_until}")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # If a widget was provided (user clicked it), do not force focus here.
+            # For consistency across platforms we avoid calling setFocus() which
+            # previously caused the popup to steal keyboard input. The natural
+            # focus handling of the application will assign focus on click.
+            # If callers require explicit focus, they can handle it via the
+            # suggestion_closed signal.
+            pass
+        except Exception:
+            pass
 
     def toggle_type(self, row, btn):
         # Toggle type state and reuse _apply_type_state to keep visuals consistent
@@ -813,6 +1240,7 @@ class GovernorCabinetWindow(QMainWindow):
         self._apply_type_state(row, new_state, force_update=True)
         self.recalc_row(row)
         self.sync_all_data()
+        self.update_stats_table()
 
     def _ensure_type_button(self, row, is_income=False):
         """Ensure the type QPushButton exists for given row. Create and wire toggle handler if missing."""
@@ -850,22 +1278,36 @@ class GovernorCabinetWindow(QMainWindow):
         self._apply_type_state(row, bool(is_income), force_update=True)
 
     def update_row_numbers(self):
-        for r in range(self.trans_table.rowCount() - 1):
-             item = self.trans_table.item(r, 0)
-             if item:
-                 item.setText(str(r + 1))
-        # Reapply type state for all rows to ensure qty visibility maintained after row moves
         try:
+            # Re-number visible transaction rows (exclude the trailing add-row)
             for r in range(self.trans_table.rowCount() - 1):
-                container = self.trans_table.cellWidget(r, 2)
-                if container:
-                    btn = container.findChild(QPushButton)
-                    if btn:
-                        is_income = bool(btn.property('is_income'))
-                        try:
-                            self._apply_type_state(r, is_income)
-                        except Exception:
-                            pass
+                try:
+                    it = self.trans_table.item(r, 0)
+                    txt = str(r + 1)
+                    if it is None:
+                        it = QTableWidgetItem(txt)
+                        it.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                        it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                        self.trans_table.setItem(r, 0, it)
+                    else:
+                        it.setText(txt)
+
+                    # Re-apply type state to ensure correct qty visibility for income rows
+                    # IMPORTANT: do NOT force recreation here — forcing would recreate
+                    # the qty widget and reset its value to 0. Use a non-forcing
+                    # update so existing Qty values are preserved.
+                    cont_type = self.trans_table.cellWidget(r, 2)
+                    is_income = False
+                    if cont_type:
+                        btn = cont_type.findChild(QPushButton)
+                        if btn:
+                            is_income = bool(btn.property('is_income'))
+                    try:
+                        self._apply_type_state(r, is_income, force_update=False)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -887,6 +1329,7 @@ class GovernorCabinetWindow(QMainWindow):
             self.trans_table.removeRow(row_to_delete)
             self.update_row_numbers()
             self.sync_all_data() # Sync on delete transaction
+            self.update_stats_table()
 
             try:
                 self.trans_table.setUpdatesEnabled(True)
@@ -972,6 +1415,7 @@ class GovernorCabinetWindow(QMainWindow):
 
         # Trigger sync on change
         self.sync_all_data()
+        self.update_stats_table()
 
     def delete_transaction(self):
         pass
@@ -998,7 +1442,6 @@ class GovernorCabinetWindow(QMainWindow):
             pass
         self.items_table.insertRow(plus_row_index)
         row = plus_row_index 
-        
         self.items_table.setRowHeight(row, 45)
         
         # 0. Item Name (Styled QLineEdit)
@@ -1027,7 +1470,7 @@ class GovernorCabinetWindow(QMainWindow):
         # 1. Base Price (Integer SpinBox)
         # Use helper for centered spinbox
         container_price = create_centered_spinbox(value=0, prefix="$", min_val=0, max_val=1000000000, 
-                                                  on_change=lambda: self.sync_all_data())
+                                                  on_change=lambda: (self.sync_all_data(), self.update_stats_table()))
         self.items_table.setCellWidget(row, 1, container_price)
 
         # 2. Delete Button
@@ -1036,14 +1479,13 @@ class GovernorCabinetWindow(QMainWindow):
         
         self.items_table.setCellWidget(row, 2, container_del)
         
-        # Connect signals for immediate sync
-        name_edit.textChanged.connect(self.sync_all_data)
+        # Connect signals for immediate sync and stats refresh
+        name_edit.textChanged.connect(lambda txt: (self.sync_all_data(), self.update_stats_table()))
         
         self.sync_all_data() # Sync on adding new item row
-
+        # Also ensure stats reflect the new empty row
         try:
-            self.items_table.setUpdatesEnabled(True)
-            self.items_table.viewport().update()
+            self.update_stats_table()
         except Exception:
             pass
 
@@ -1058,6 +1500,10 @@ class GovernorCabinetWindow(QMainWindow):
                 pass
             self.items_table.removeRow(index.row())
             self.sync_all_data() # Sync on delete item row
+            try:
+                self.update_stats_table()
+            except Exception:
+                pass
             try:
                 self.items_table.setUpdatesEnabled(True)
                 self.items_table.viewport().update()
@@ -1477,25 +1923,21 @@ class GovernorCabinetWindow(QMainWindow):
                     # Qty/Price - delegation to _apply_type_state handles visibility
                     c_qty = self.trans_table.cellWidget(idx, 4)
                     if c_qty:
-                        sp_list = c_qty.findChildren(QAbstractSpinBox)
-                        sp = sp_list[0] if sp_list else None
-                        
-                        # Just set value here, visibility is handled by _apply_type_state below
-                        if sp:
-                             try:
-                                 sp.setValue(qty_val)
-                             except Exception:
-                                 pass
+                        try:
+                            sp = c_qty.findChild(QAbstractSpinBox)
+                            if sp:
+                                sp.setValue(qty_val)
+                        except Exception:
+                            pass
 
                     c_price = self.trans_table.cellWidget(idx, 5)
                     if c_price:
-                        sp_list = c_price.findChildren(QAbstractSpinBox)
-                        sp = sp_list[0] if sp_list else None
-                        if sp:
-                            try:
+                        try:
+                            sp = c_price.findChild(QAbstractSpinBox)
+                            if sp:
                                 sp.setValue(price_val)
-                            except Exception:
-                                pass
+                        except Exception:
+                            pass
 
                     # Sum
                     item_sum = self.trans_table.item(idx, 6)
@@ -1521,7 +1963,8 @@ class GovernorCabinetWindow(QMainWindow):
                         btn = c_type.findChild(QPushButton)
                         if btn:
                             is_inc = bool(btn.property("is_income"))
-                    self._apply_type_state(r, is_inc, force_update=True)
+                    # Do NOT force recreation here; preserve existing qty/spinbox values
+                    self._apply_type_state(r, is_inc, force_update=False)
 
                 # Recalculate sums and refresh combos after import
                 try:
@@ -1549,6 +1992,7 @@ class GovernorCabinetWindow(QMainWindow):
             except Exception:
                 pass
             self._importing = False
+            self.update_stats_table()
 
     def load_remote_sheets(self):
         """Fetch 'objects' and 'stats' sheets once and apply them to the UI on open.
@@ -1572,50 +2016,104 @@ class GovernorCabinetWindow(QMainWindow):
         return
 
     def _apply_type_state(self, row, is_income, force_update=False):
-        """Applies the visual state for Income/Expense."""
-        btn_type_container = self.trans_table.cellWidget(row, 2)
-        if not btn_type_container:
-            return
-        btn = btn_type_container.findChild(QPushButton)
-        if not btn:
-            return
-
-        # Explicit check before setting property or changing styles
-        current_state = bool(btn.property('is_income') or False)
-        
-        # force_update ensures we apply styles even if logic thinks it's same
-        if not force_update and current_state == is_income:
-            # But we must check qty visibility!
-            pass
-        
+        """Ensure the visual state for the given row's Type and Qty cells.
+        For expense rows (is_income=False) ensure a Qty spinbox exists and is visible.
+        For income rows (is_income=True) ensure the Qty cell is removed (or hidden).
+        Reconnects the type button handler so it always toggles the correct row.
+        """
         try:
-             btn.setProperty('is_income', bool(is_income))
-        except Exception:
-             pass
+            # Basic validation
+            if not hasattr(self, 'trans_table'):
+                return
+            if row is None:
+                return
+            if row < 0 or row >= self.trans_table.rowCount():
+                return
 
-        # Update button appearance
-        if is_income:
-            btn.setText("+")
-            btn.setStyleSheet(
-                "QPushButton { background-color: #4caf50; color: #ffffff; border-radius: 4px; font-weight: bold; font-size: 16px; border: none; padding: 0px; }"
-            )
-        else:
-            btn.setText("-")
-            btn.setStyleSheet(
-                "QPushButton { background-color: #ff5555; color: #ffffff; border-radius: 4px; font-weight: bold; font-size: 16px; border: none; padding: 0px; }"
-            )
-
-        # Handle visibility of Quantity depending on type
-        w_qty = self.trans_table.cellWidget(row, 4)
-        if w_qty:
+            # Get/create type button container
             try:
-                # Use QWidget.setVisible to toggle the entire cell widget
+                container = self.trans_table.cellWidget(row, 2)
+                if container is None:
+                    # Nothing to do if there's no type container (row not initialized)
+                    return
+                btn = container.findChild(QPushButton)
+            except Exception:
+                btn = None
+
+            # Update button property/text/style and ensure click handler references this row
+            try:
+                if btn:
+                    try:
+                        btn.setProperty('is_income', bool(is_income))
+                    except Exception:
+                        pass
+                    btn.setText('+' if is_income else '-')
+                    if is_income:
+                        btn.setStyleSheet("""
+                            QPushButton { background-color: #55aa55; color: white; border-radius: 4px; font-weight: bold; font-size: 16px; border: none; padding: 0px; }
+                        """)
+                    else:
+                        btn.setStyleSheet("""
+                            QPushButton { background-color: #ff5555; color: #ffffff; border-radius: 4px; font-weight: bold; font-size: 16px; border: none; padding: 0px; }
+                        """)
+                    # Reconnect clicked handler so it toggles this specific row
+                    try:
+                        btn.clicked.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        btn.clicked.connect(lambda checked=False, r=row, b=btn: self.toggle_type(r, b))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Manage Qty cell (column 4)
+            try:
+                w_qty = self.trans_table.cellWidget(row, 4)
                 if is_income:
-                    if w_qty.isVisible():
-                        w_qty.setVisible(False)
+                    # For income rows remove the qty widget so it cannot be used
+                    if w_qty is not None:
+                        try:
+                            # Remove widget from cell. Keep the widget object for GC by detaching.
+                            self.trans_table.setCellWidget(row, 4, None)
+                        except Exception:
+                            try:
+                                w_qty.setVisible(False)
+                            except Exception:
+                                pass
                 else:
-                    if not w_qty.isVisible():
-                        w_qty.setVisible(True)
+                    # For expense rows ensure a qty widget exists and is visible
+                    if w_qty is None or force_update:
+                        try:
+                            qty_widget = create_centered_spinbox(value=0, min_val=-999999, max_val=999999,
+                                                                 on_change=lambda r=row: self.recalc_row(r))
+                            self.trans_table.setCellWidget(row, 4, qty_widget)
+                            try:
+                                qty_widget.setVisible(True)
+                            except Exception:
+                                pass
+                        except Exception as e:
+                            try:
+                                print(f"[Governor] _apply_type_state: failed to create qty widget: {e}")
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            w_qty.setVisible(True)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            # Refresh viewport so changes reflect immediately
+            try:
+                self.trans_table.viewport().update()
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(f"[Governor] _apply_type_state error: {e}")
             except Exception:
                 pass
 
@@ -1817,11 +2315,25 @@ class GovernorCabinetWindow(QMainWindow):
             pass
 
     def on_item_text_changed(self, row, text):
-        try: 
-             # Also trigger popup update if focused
-             if getattr(self, '_active_item_editor', None) and self._active_item_editor.hasFocus():
-                 self._show_suggestions_for_editor(self._active_item_editor, text)
-                 self._popup_active_editor = self._active_item_editor
+        try:
+             # Use the same debounced interaction path so rapid text changes
+             # don't trigger immediate show/hide flicker. Respect suppression window
+             if time.time() < getattr(self, '_suppress_reopen_until', 0):
+                 try:
+                     print("[Governor] Suppression active in on_item_text_changed, skipping popup")
+                 except Exception:
+                     pass
+             else:
+                 try:
+                     if getattr(self, '_active_item_editor', None) and self._active_item_editor.hasFocus():
+                         # Reuse interaction path which starts/refreshes debounce
+                         try:
+                             self._on_item_editor_interaction(row, self._active_item_editor)
+                             self._popup_active_editor = self._active_item_editor
+                         except Exception:
+                             pass
+                 except Exception:
+                     pass
         except Exception:
              pass
 
@@ -1834,12 +2346,9 @@ class GovernorCabinetWindow(QMainWindow):
             self.on_item_selected(row, text)
             # Remove focus from editor to prevent immediate popup reopen
             try:
+                # Clear focus from the line edit but DO NOT force focus elsewhere.
+                # Forcing focus to another widget caused focus grab issues on some platforms.
                 le.clearFocus()
-                # Move focus to the table so keyboard focus isn't in the editor
-                try:
-                    self.trans_table.setFocus()
-                except Exception:
-                    self.setFocus()
             except Exception:
                 pass
         if getattr(self, "_item_popup", None):
@@ -1848,170 +2357,6 @@ class GovernorCabinetWindow(QMainWindow):
             except Exception:
                 pass
             self._item_popup = None
-        # Suppress immediate reopen for a short moment
-        try:
-            self._suppress_popup = True
-            QTimer.singleShot(250, lambda: setattr(self, '_suppress_popup', False))
-            # also prevent global filter from thinking this was an outside click
-            try:
-                self._suppress_global_close_until = time.time() + 0.25
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-    def _on_completer_activated(self, text: str):
-        """Handle completer activation: set active editor text, apply price if matches, and hide popup."""
-        try:
-            le = getattr(self, '_active_item_editor', None)
-            if isinstance(le, QLineEdit):
-                # Temporarily suppress popup reopening
-                try:
-                    self._suppress_popup = True
-                    QTimer.singleShot(250, lambda: setattr(self, '_suppress_popup', False))
-                except Exception:
-                    pass
-
-                # Apply text to editor
-                try:
-                    le.setText(text)
-                    # Trigger item selected logic: use its trans_row property
-                    row_prop = le.property('trans_row')
-                    row = int(row_prop) if row_prop is not None else None
-                    if row is not None:
-                        try:
-                            self.on_item_selected(row, text)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-                # Hide completer popup
-                try:
-                    comp = getattr(self, '_items_completer', None)
-                    if comp:
-                        comp.popup().hide()
-                except Exception:
-                    pass
-
-                # Ensure editor loses focus so eventFilter doesn't re-show popup
-                try:
-                    le.clearFocus()
-                    try:
-                        self.trans_table.setFocus()
-                    except Exception:
-                        self.setFocus()
-                except Exception:
-                    pass
-
-                # also suppress global close detection for the immediate mouse event
-                try:
-                    self._suppress_global_close_until = time.time() + 0.25
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    
-    def _on_suggestion_selected(self, text):
-        """Callback when an item is chosen from the custom popup."""
-        if self._popup_active_editor:
-            try:
-                self._popup_active_editor.setText(text)
-                # optionally trigger updates
-                row = self._popup_active_editor.property('trans_row')
-                if row is not None:
-                    self.on_item_text_changed(row, text)
-            except Exception:
-                pass
-        
-        try:
-             self._suggestions_popup.hide()
-        except:
-             pass
-
-    def eventFilter(self, source, event):
-        # First, existing eventFilter logic used for QLineEdit interactions
-        try:
-            if isinstance(source, QLineEdit):
-                row_prop = source.property('trans_row')
-                row = int(row_prop) if row_prop is not None else None
-                if row is not None:
-                    if event.type() in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
-                        QTimer.singleShot(0, lambda r=row, le=source: self._on_item_editor_interaction(r, le))
-                    elif event.type() == QEvent.Type.KeyPress:
-                        QTimer.singleShot(0, lambda r=row, le=source: self._on_item_editor_interaction(r, le))
-        except Exception:
-            pass
-
-        # Global filter: close completer popup or custom popup when clicking outside
-        try:
-            if event.type() == QEvent.Type.MouseButtonPress:
-                # If recent popup show action requests suppression, skip closing here
-                try:
-                    if getattr(self, '_suppress_global_close_until', 0) > time.time():
-                        return super().eventFilter(source, event)
-                except Exception:
-                    pass
-
-                # If there's a completer popup shown, and click is outside it and not on an editor, close it
-                try:
-                    comp = getattr(self, '_items_completer', None)
-                    if comp:
-                        popup = comp.popup()
-                        if popup and popup.isVisible():
-                            gw = QApplication.widgetAt(event.globalPosition().toPoint()) if hasattr(QApplication, 'widgetAt') else None
-                            if gw is not None and (popup.isAncestorOf(gw) or gw is popup):
-                                pass
-                            else:
-                                try:
-                                    popup.hide()
-                                except Exception:
-                                    try:
-                                        popup.close()
-                                    except Exception:
-                                        pass
-                except Exception:
-                    pass
-
-                # Close custom item popup if click outside
-                try:
-                    ip = getattr(self, '_item_popup', None)
-                    if ip and isinstance(ip, QFrame) and ip.isVisible():
-                        gw = QApplication.widgetAt(event.globalPosition().toPoint()) if hasattr(QApplication, 'widgetAt') else None
-                        if gw is not None and (ip.isAncestorOf(gw) or gw is ip):
-                            pass
-                        else:
-                            try:
-                                ip.close()
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
-            # Additional: if window deactivates or focus is lost, close popups to handle Alt+Tab cases
-            if event.type() in (QEvent.Type.WindowDeactivate, QEvent.Type.FocusOut):
-                try:
-                    comp = getattr(self, '_items_completer', None)
-                    if comp:
-                        try:
-                            comp.popup().hide()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                try:
-                    ip = getattr(self, '_item_popup', None)
-                    if ip and isinstance(ip, QFrame):
-                        try:
-                            ip.close()
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        
-        return super().eventFilter(source, event)
 
     def _ensure_delete_widget_for_row(self, row):
         """Ensure the delete (red square) widget exists for transaction row `row`.
@@ -2036,6 +2381,12 @@ class GovernorCabinetWindow(QMainWindow):
         try:
             if getattr(self, '_loading_overlay', None):
                 self._loading_overlay._sync_geometry()
+        except Exception:
+            pass
+        # Ensure stats table columns expand to fill available width when window resizes
+        try:
+            if getattr(self, 'stats_table', None):
+                self._adjust_stats_table_column_widths()
         except Exception:
             pass
         return super().resizeEvent(event)
@@ -2075,3 +2426,477 @@ class GovernorCabinetWindow(QMainWindow):
         pos = sender_widget.mapToGlobal(QPoint(0, sender_widget.height()))
         cal_widget.move(pos)
         cal_widget.show()
+
+    def _sort_transactions_by_date(self, descending=False):
+        """Sort visible transactions by date without removing rows.
+        Rows outside the selected range are hidden (not deleted). Visible rows
+        are sorted in-place by updating values/widgets rather than reparenting
+        widgets/items to avoid losing data that is later exported.
+        """
+        try:
+            # Read selected range (if any)
+            start = None
+            end = None
+            try:
+                if getattr(self, 'period_range', None):
+                    start, end = self.period_range.dateRange()
+            except Exception:
+                start = None
+                end = None
+
+            total_rows = self.trans_table.rowCount()
+            data_rows = max(0, total_rows - 1)  # exclude trailing plus row
+
+            # Hide rows outside the selected period (do not delete)
+            for r in range(data_rows):
+                try:
+                    visible = True
+                    if start or end:
+                        c_date = self.trans_table.cellWidget(r, 1)
+                        date_text = ''
+                        if c_date:
+                            btns = c_date.findChildren(QPushButton)
+                            if btns:
+                                date_text = btns[0].text()
+                            else:
+                                try:
+                                    de = c_date.findChild(DateEditClickable)
+                                    if de:
+                                        date_text = de.date().toString('dd.MM.yyyy')
+                                except Exception:
+                                    pass
+                        qd = QDate.fromString(date_text, 'dd.MM.yyyy') if date_text else None
+                        if qd:
+                            if start and qd < start:
+                                visible = False
+                            if end and qd > end:
+                                visible = False
+                    try:
+                        self.trans_table.setRowHidden(r, not visible)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # Collect primitives for visible rows
+            rows = []
+            visible_positions = []
+            for r in range(data_rows):
+                try:
+                    if self.trans_table.isRowHidden(r):
+                        continue
+                    visible_positions.append(r)
+                    # Read primitives
+                    # Date
+                    date_text = ''
+                    qd = None
+                    c_date = self.trans_table.cellWidget(r, 1)
+                    if c_date:
+                        btns = c_date.findChildren(QPushButton)
+                        if btns:
+                            date_text = btns[0].text()
+                        else:
+                            try:
+                                de = c_date.findChild(DateEditClickable)
+                                if de:
+                                    qd = de.date()
+                                    date_text = qd.toString('dd.MM.yyyy')
+                            except Exception:
+                                pass
+                        if date_text and not qd:
+                            try:
+                                qd = QDate.fromString(date_text, 'dd.MM.yyyy')
+                            except Exception:
+                                qd = None
+
+                    # Type
+                    is_income = False
+                    c_type = self.trans_table.cellWidget(r, 2)
+                    if c_type:
+                        btn = c_type.findChild(QPushButton)
+                        if btn:
+                            try:
+                                is_income = bool(btn.property('is_income'))
+                            except Exception:
+                                is_income = False
+
+                    # Item
+                    item_name = ''
+                    c_item = self.trans_table.cellWidget(r, 3)
+                    if c_item:
+                        le = c_item.findChild(QLineEdit)
+                        if le:
+                            item_name = le.text().strip()
+
+                    # Qty
+                    qty = 0
+                    w_qty = self.trans_table.cellWidget(r, 4)
+                    if w_qty:
+                        try:
+                            sp = w_qty.findChild((NoScrollSpinBox, QSpinBox, QDoubleSpinBox))
+                            if sp:
+                                qty = int(sp.value())
+                        except Exception:
+                            qty = 0
+
+                    # Price
+                    price = 0
+                    w_price = self.trans_table.cellWidget(r, 5)
+                    if w_price:
+                        try:
+                            sp = w_price.findChild((QSpinBox, QDoubleSpinBox, NoScrollSpinBox))
+                            if sp:
+                                price = int(sp.value())
+                        except Exception:
+                            price = 0
+
+                    # Sum
+                    sum_val = 0
+                    w_sum = self.trans_table.item(r, 6)
+                    if w_sum:
+                        try:
+                            sum_val = _parse_display_amount(w_sum.text())
+                        except Exception:
+                            sum_val = 0
+
+                    rows.append({'date_text': date_text, 'qdate': qd, 'is_income': is_income,
+                                 'item': item_name, 'qty': qty, 'price': price, 'sum': sum_val,
+                                 'height': self.trans_table.rowHeight(r)})
+                except Exception:
+                    pass
+
+            if not rows:
+                return
+
+            # Sort by qdate (None as very old)
+            def _sort_key(x):
+                return (x['qdate'].toJulianDay() if x.get('qdate') else -999999)
+
+            rows.sort(key=_sort_key, reverse=descending)
+
+            # Write sorted values back into the visible positions (preserve widgets)
+            for pos, rowdata in zip(visible_positions, rows):
+                try:
+                    # Date
+                    c_date = self.trans_table.cellWidget(pos, 1)
+                    if c_date:
+                        btns = c_date.findChildren(QPushButton)
+                        if btns and rowdata.get('date_text') is not None:
+                            try:
+                                btns[0].setText(rowdata.get('date_text') or "")
+                            except Exception:
+                                pass
+                        else:
+                            try:
+                                de = c_date.findChild(DateEditClickable)
+                                if de and rowdata.get('qdate'):
+                                    de.setDate(rowdata.get('qdate'))
+                            except Exception:
+                                pass
+
+                    # Type and qty visibility
+                    try:
+                        self._ensure_type_button(pos, rowdata.get('is_income', False))
+                        self._apply_type_state(pos, rowdata.get('is_income', False), force_update=False)
+                    except Exception:
+                        pass
+
+                    # Item
+                    c_item = self.trans_table.cellWidget(pos, 3)
+                    if c_item:
+                        le = c_item.findChild(QLineEdit)
+                        if le:
+                            le.setText(rowdata.get('item', ''))
+
+                    # Qty
+                    c_qty = self.trans_table.cellWidget(pos, 4)
+                    if c_qty:
+                        try:
+                            sp = c_qty.findChild((NoScrollSpinBox, QSpinBox, QDoubleSpinBox))
+                            if sp:
+                                sp.setValue(rowdata.get('qty', 0))
+                        except Exception:
+                            pass
+
+                    # Price
+                    c_price = self.trans_table.cellWidget(pos, 5)
+                    if c_price:
+                        try:
+                            sp = c_price.findChild((QSpinBox, QDoubleSpinBox, NoScrollSpinBox))
+                            if sp:
+                                sp.setValue(rowdata.get('price', 0))
+                        except Exception:
+                            pass
+
+                    # Sum
+                    item_sum = self.trans_table.item(pos, 6)
+                    if item_sum:
+                        try:
+                            item_sum.setText(_format_display_amount(rowdata.get('sum', 0)))
+                        except Exception:
+                            pass
+
+                    # Ensure delete button exists
+                    try:
+                        self._ensure_delete_widget_for_row(pos)
+                    except Exception:
+                        pass
+
+                    try:
+                        self.trans_table.setRowHeight(pos, rowdata.get('height', 45))
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            # Update numbering and recalc visible rows
+            try:
+                self.update_row_numbers()
+            except Exception:
+                pass
+            try:
+                for r in visible_positions:
+                    try:
+                        self.recalc_row(r)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            try:
+                self.refresh_item_combos()
+            except Exception:
+                pass
+
+        except Exception as e:
+            try:
+                print(f"[Governor] _sort_transactions_by_date error: {e}")
+            except Exception:
+                pass
+
+    def update_stats_table(self, filter_text: str = ''):
+        """Aggregate expense rows from trans_table into stats_table.
+        Case-insensitive aggregation. Respects selected period in `period_range`.
+        """
+        try:
+            f = (filter_text or '').strip().lower()
+            stats = {}
+            # read period from single DateRangeEdit (period_range)
+            start = None
+            end = None
+            try:
+                if getattr(self, 'period_range', None):
+                    start, end = self.period_range.dateRange()
+            except Exception:
+                start = None
+                end = None
+
+            for r in range(self.trans_table.rowCount() - 1):
+                # read type
+                c_type = self.trans_table.cellWidget(r, 2)
+                is_inc = False
+                if c_type:
+                    btn = c_type.findChild(QPushButton)
+                    if btn:
+                        is_inc = bool(btn.property('is_income'))
+                # ignore income rows
+                if is_inc:
+                    continue
+
+                # read date and check period
+                c_date = self.trans_table.cellWidget(r, 1)
+                date_ok = True
+                if c_date and (start is not None or end is not None):
+                    btns = c_date.findChildren(QPushButton)
+                    date_text = btns[0].text() if btns else ''
+                    qd = QDate.fromString(date_text, 'dd.MM.yyyy') if date_text else None
+                    if qd:
+                        if start and qd < start:
+                            date_ok = False
+                        if end and qd > end:
+                            date_ok = False
+                if not date_ok:
+                    continue
+
+                # item name
+                c_item = self.trans_table.cellWidget(r, 3)
+                name = ''
+                if c_item:
+                    le = c_item.findChild(QLineEdit)
+                    if le:
+                        name = le.text().strip()
+                if not name:
+                    continue
+                if f and f not in name.lower():
+                    continue
+
+                # qty and sum
+                qty = 0
+                w_qty = self.trans_table.cellWidget(r, 4)
+                if w_qty:
+                    sp = w_qty.findChild((NoScrollSpinBox, QSpinBox, QDoubleSpinBox))
+                    if sp:
+                        try:
+                            qty = int(sp.value())
+                        except Exception:
+                            qty = 0
+                # sum
+                w_sum = self.trans_table.item(r, 6)
+                total = 0
+                if w_sum:
+                    try:
+                        total = _parse_display_amount(w_sum.text())
+                    except Exception:
+                        total = 0
+
+                key = name.lower()
+                if key not in stats:
+                    stats[key] = {'display': name, 'qty': 0, 'total': 0}
+                stats[key]['qty'] += abs(int(qty))
+                stats[key]['total'] += abs(int(total))
+
+            # Populate stats_table
+            self.stats_table.setRowCount(0)
+            for k, v in stats.items():
+                row_idx = self.stats_table.rowCount()
+                self.stats_table.insertRow(row_idx)
+                # Name (make bold)
+                it_name = QTableWidgetItem(v['display'])
+                it_name.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                self.stats_table.setItem(row_idx, 0, it_name)
+                # Qty (make bold)
+                it_qty = QTableWidgetItem(str(v['qty']))
+                it_qty.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                it_qty.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                self.stats_table.setItem(row_idx, 1, it_qty)
+                # avg per unit
+                avg = 0
+                try:
+                    avg = int(v['total'] / v['qty']) if v['qty'] else 0
+                except Exception:
+                    avg = 0
+                it_avg = QTableWidgetItem(_format_display_amount(avg))
+                it_avg.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                it_avg.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                self.stats_table.setItem(row_idx, 2, it_avg)
+                it_sum = QTableWidgetItem(_format_display_amount(v['total']))
+                it_sum.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                it_sum.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+                self.stats_table.setItem(row_idx, 3, it_sum)
+
+        except Exception as e:
+            try:
+                print(f"[Governor] update_stats_table error: {e}")
+            except Exception:
+                pass
+
+    def _adjust_name_column_for_editor(self, le: QLineEdit):
+        """Ensure the 'Предмет' column (index 3) is at least 150px and expand it
+        when the editor content requires more space, reducing Price(5)/Sum(6)
+        columns if possible. This keeps the name visible and only shrinks numeric
+        columns within sensible minima.
+        """
+        try:
+            if le is None:
+                return
+            text = le.text() or ""
+            fm = le.fontMetrics()
+            # desired width including some padding
+            desired = fm.horizontalAdvance(text) + 30
+            # minimum for name column
+            min_name = 150
+            desired = max(desired, min_name)
+
+            col_name = 3
+            col_price = 5
+            col_sum = 6
+
+            cur_name_w = self.trans_table.columnWidth(col_name)
+            if desired <= cur_name_w:
+                return
+
+            delta = desired - cur_name_w
+            # minima for numeric columns
+            min_price = 80
+            min_sum = 80
+
+            avail_price = max(0, self.trans_table.columnWidth(col_price) - min_price)
+            avail_sum = max(0, self.trans_table.columnWidth(col_sum) - min_sum)
+            total_avail = avail_price + avail_sum
+            if total_avail <= 0:
+                # nothing to take from; just set name to desired but don't change others
+                try:
+                    self.trans_table.setColumnWidth(col_name, desired)
+                except Exception:
+                    pass
+                return
+
+            take = min(delta, total_avail)
+            # Prefer taking from Price first, then Sum
+            take_from_price = min(avail_price, take)
+            take_from_sum = take - take_from_price
+
+            new_price = max(min_price, self.trans_table.columnWidth(col_price) - take_from_price)
+            new_sum = max(min_sum, self.trans_table.columnWidth(col_sum) - take_from_sum)
+
+            try:
+                # Apply new widths
+                self.trans_table.setColumnWidth(col_price, int(new_price))
+                self.trans_table.setColumnWidth(col_sum, int(new_sum))
+                self.trans_table.setColumnWidth(col_name, int(cur_name_w + take))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _adjust_stats_table_column_widths(self):
+        """Distribute available width of stats_table across columns proportionally
+        while respecting minimum column widths configured earlier.
+        """
+        try:
+            tbl = getattr(self, 'stats_table', None)
+            if tbl is None:
+                return
+
+            # Ensure header is in Stretch mode so columns fill available space
+            try:
+                for ci in range(tbl.columnCount()):
+                    tbl.horizontalHeader().setSectionResizeMode(ci, QHeaderView.ResizeMode.Stretch)
+                tbl.horizontalHeader().setStretchLastSection(True)
+            except Exception:
+                pass
+
+            # base minimal widths (reduced to avoid forcing overflow)
+            mins = [80, 50, 70, 70]
+            total_min = sum(mins)
+
+            # available content width in the viewport (reduce a bit for paddings)
+            avail = max(0, (tbl.viewport().width() or tbl.width()) - 10)
+            if avail <= 0:
+                return
+
+            # If there's extra space beyond total_min, distribute proportionally
+            extra = max(0, avail - total_min)
+            props = [m / total_min for m in mins]
+
+            # If no extra, just set each column to at least its minimum
+            for i, m in enumerate(mins):
+                w = m + int(extra * props[i]) if extra > 0 else m
+                try:
+                    # In Stretch mode setColumnWidth is advisory; still set minimal via resize
+                    tbl.setColumnWidth(i, max(40, int(w)))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        """Ensure stats table columns are adjusted once the window is shown."""
+        try:
+            QTimer.singleShot(0, lambda: self._adjust_stats_table_column_widths())
+        except Exception:
+            pass
+        try:
+            return super().showEvent(event)
+        except Exception:
+            return
