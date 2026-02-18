@@ -1,31 +1,58 @@
 def get_scrollbar_qss():
-    """Returns a QSS snippet for rounded dark scrollbars used across the app."""
+    """Returns a QSS snippet for rounded dark scrollbars used across the app (Google Chrome style)."""
     return '''
+    /* Vertical Scrollbar */
     QScrollBar:vertical {
-        background: rgba(40,40,40,1);
+        background: transparent;  /* Track background transparent */
         width: 12px;
-        margin: 4px 2px 4px 2px;
-        border-radius: 8px;
+        margin: 0px; 
     }
+    
     QScrollBar::handle:vertical {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5aa9ea, stop:1 #2b7fbf);
+        background: #555555;      /* Thumb color */
         min-height: 20px;
-        border-radius: 8px;
+        margin: 2px 2px 2px 2px;  /* Margin to simulate floating 'pill' inside track */
+        border-radius: 4px;       /* Pill shape */
     }
+    
+    QScrollBar::handle:vertical:hover {
+        background: #777777;      /* Hover state lighter */
+    }
+    
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
         height: 0px;
         background: none;
     }
-    QScrollBar:horizontal {
-        background: rgba(40,40,40,1);
-        height: 12px;
-        margin: 2px 4px 2px 4px;
-        border-radius: 8px;
+    
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: none;
     }
+
+    /* Horizontal Scrollbar */
+    QScrollBar:horizontal {
+        background: transparent;
+        height: 12px;
+        margin: 0px;
+    }
+    
     QScrollBar::handle:horizontal {
-        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5aa9ea, stop:1 #2b7fbf);
+        background: #555555;
         min-width: 20px;
-        border-radius: 8px;
+        margin: 2px 2px 2px 2px;
+        border-radius: 4px;
+    }
+    
+    QScrollBar::handle:horizontal:hover {
+        background: #777777;
+    }
+    
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+        width: 0px;
+        background: none;
+    }
+    
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+        background: none;
     }
 
     /* Slider visuals (exported to separate file) */

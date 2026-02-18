@@ -1,10 +1,39 @@
 import hashlib
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QMessageBox, QCheckBox, QDialog, QFrame, QHBoxLayout)
-from PyQt6.QtCore import Qt, pyqtSignal
+                             QMessageBox, QCheckBox, QDialog, QFrame, QHBoxLayout, QApplication)
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject
 from PyQt6.QtGui import QIcon, QPainter, QColor
 from modules.core.google_service import GoogleService
 from modules.core.utils import get_resource_path
+
+class LoginWorker(QThread):
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, google_service, username, password):
+        super().__init__()
+        self.google_service = google_service
+        self.username = username
+        self.password = password
+
+    def run(self):
+        try:
+            users = self.google_service.get_users()
+            input_hash = hashlib.sha256(self.password.encode()).hexdigest()
+            
+            found_user = None
+            for user in users:
+                if str(user.get('Username')) == self.username and str(user.get('PasswordHash')) == input_hash:
+                    user.setdefault('CanEdit', 0)
+                    user.setdefault('CanUpload', 0)
+                    user.setdefault('Role', 'User')
+                    found_user = user
+                    break
+            
+            self.finished.emit(found_user if found_user else {})
+            
+        except Exception as e:
+            self.error.emit(str(e))
 
 class SuccessOverlay(QDialog):
     def __init__(self, parent=None, message=""):
@@ -201,6 +230,8 @@ class LoginWindow(QWidget):
         self.setLayout(layout)
 
     def login(self):
+        from modules.ui.loading_overlay import LoadingOverlay
+        
         username = self.username_input.text().strip()
         password = self.password_input.text().strip()
         
@@ -209,32 +240,39 @@ class LoginWindow(QWidget):
             return
 
         self.status_label.setText("Подключение...")
-        # Force UI update needed here normally, but single thread blocks anyway.
-        # We'll rely on fast auth or just blocking is fine for MVP.
+        self.loading_overlay = LoadingOverlay(self, "Вход...")
+        self.loading_overlay.showOverlay()
         
-        try:
-            users = self.google_service.get_users()
-            input_hash = hashlib.sha256(password.encode()).hexdigest()
-            
-            found = False
-            for user in users:
-                if str(user.get('Username')) == username and str(user.get('PasswordHash')) == input_hash:
-                    # Ensure defaults
-                    user.setdefault('CanEdit', 0)
-                    user.setdefault('CanUpload', 0)
-                    user.setdefault('Role', 'User')
-                    self.user_data = user
-                    found = True
-                    break
-            
-            if found:
-                self.login_success.emit(self.user_data)
-                self.close()
-            else:
-                self.status_label.setText("Неверные данные")
-                
-        except Exception as e:
-            self.status_label.setText(f"Ошибка соединения: {e}")
+        # Disable inputs
+        self.login_btn.setEnabled(False)
+        self.username_input.setEnabled(False)
+        self.password_input.setEnabled(False)
+
+        self.worker = LoginWorker(self.google_service, username, password)
+        self.worker.finished.connect(self.on_login_finished)
+        self.worker.error.connect(self.on_login_error)
+        self.worker.start()
+
+    def on_login_finished(self, user_data):
+        self._cleanup_login_ui()
+        if user_data:
+            self.user_data = user_data
+            self.login_success.emit(self.user_data)
+            self.close()
+        else:
+            self.status_label.setText("Неверные данные")
+
+    def on_login_error(self, error_msg):
+        self._cleanup_login_ui()
+        self.status_label.setText(f"Ошибка соединения: {error_msg}")
+
+    def _cleanup_login_ui(self):
+        if hasattr(self, 'loading_overlay'):
+            self.loading_overlay.hideOverlay()
+        
+        self.login_btn.setEnabled(True)
+        self.username_input.setEnabled(True)
+        self.password_input.setEnabled(True)
 
 class AdminPanel(QDialog):
     def __init__(self, parent=None, center_on_parent=False):

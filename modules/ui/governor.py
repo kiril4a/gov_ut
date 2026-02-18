@@ -42,9 +42,11 @@ class RemoteLoadWorker(QThread):
         except Exception as e:
             self.error_occurred.emit(str(e))
 
-def _format_display_amount(value: int) -> str:
-    """Format integer amount for display with dot thousand separators and trailing $; include sign for income/expense."""
-    sign = '+' if value > 0 else ('-' if value < 0 else '')
+def _format_display_amount(value: int, show_sign: bool = True) -> str:
+    """Format integer amount for display with dot thousand separators and trailing $; include sign for income/expense when requested.
+    If show_sign is False, positive values will not receive a leading '+', negative values still show '-'.
+    """
+    sign = ('+' if value > 0 and show_sign else ('-' if value < 0 else ''))
     abs_val = abs(int(value))
     s = f"{abs_val:,}".replace(',', '.')
     if sign:
@@ -331,23 +333,26 @@ class GovernorCabinetWindow(QMainWindow):
         # Create minimal suggestions popup early so any callbacks during import/worker
         # that call _show_suggestions_for_editor find the popup initialized.
         try:
-            print("[Governor] Early creating SimpleSuggestionsPopup...")
+            # During initialization we still want to suppress showing suggestions until
+            # imports/initialization finish, but create the popup instance early so
+            # any code paths that reference it won't trigger lazy display at (0,0).
+            self._suspend_suggestions = True
             self._suggestions_popup = SimpleSuggestionsPopup(self)
-            self._suggestions_popup.suggestion_selected.connect(self._on_suggestion_selected)
-            # Suppress immediate reopen when popup was just closed by outside click
+            try:
+                self._suggestions_popup.suggestion_selected.connect(self._on_suggestion_selected)
+            except Exception:
+                pass
             try:
                 self._suggestions_popup.suggestion_closed.connect(self._on_suggestions_closed)
             except Exception:
                 pass
             # timestamp until which reopening is suppressed
             self._suppress_reopen_until = 0
-            print("[Governor] SimpleSuggestionsPopup created early")
         except Exception as e:
             try:
-                import traceback
-                print(f"[Governor] Failed early create SimpleSuggestionsPopup: {e}\n" + traceback.format_exc())
+                print(f"[Governor] Failed to create suggestions popup during init: {e}")
             except Exception:
-                print(f"[Governor] Failed early create SimpleSuggestionsPopup: {e}")
+                pass
             self._suggestions_popup = None
 
         # Ensure init_ui is called to initialize all UI components, including trans_table
@@ -399,57 +404,41 @@ class GovernorCabinetWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(15)
-
+        main_layout.setSpacing(15)        
         header_layout = QHBoxLayout()
-        title_label = QLabel("GOVERNOR CABINET")
+        title_label = QLabel("GOVERNOR\nCABINET")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         title_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #4aa3df;")
         header_layout.addWidget(title_label)
         
         header_layout.addStretch()
         
-        stats_frame = QFrame()
-        # Single rounded container that holds all three metric labels (stacked)
-        stats_frame.setStyleSheet("background: transparent; border: none;")
-        stats_layout = QHBoxLayout(stats_frame)
-        stats_layout.setSpacing(8)
+        # Create three individual rounded metric frames and add them directly to header
+        def _make_small_metric(text):
+            f = QFrame()
+            f.setStyleSheet("background-color: #333333; border: 1px solid #404040; border-radius: 8px; padding: 10px;")
+            f.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+            lb = QLabel(text)
+            # Ensure label has no background/border so only the outer frame is visible
+            lb.setStyleSheet("color: white; font-weight: bold; font-size: 14px; background: transparent; border: none;")
+            lb.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+            ly = QVBoxLayout(f)
+            ly.setContentsMargins(10, 6, 10, 6)
+            ly.addWidget(lb)
+            return f, lb
 
-        # Inner rounded box that contains the three metrics stacked vertically
-        metrics_box = QFrame()
-        metrics_box.setStyleSheet("background-color: #333333; border: 1px solid #404040; border-radius: 10px; padding: 8px;")
-        metrics_layout = QVBoxLayout(metrics_box)
-        metrics_layout.setContentsMargins(12, 8, 12, 8)
-        metrics_layout.setSpacing(8)
-        try:
-            metrics_box.setMinimumWidth(360)  # make wider so labels don't clip
-            metrics_box.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
-        except Exception:
-            pass
+        inc_frame, self.lbl_income = _make_small_metric("Доходы: 0")
+        exp_frame, self.lbl_expense = _make_small_metric("Расходы: 0")
+        bal_frame, self.lbl_balance = _make_small_metric("Баланс: 0")
 
-        # Create the three metric labels and style them consistently
-        self.lbl_income = QLabel("Доходы: 0")
-        self.lbl_income.setStyleSheet("font-size: 14px; color: white;")
-        self.lbl_income.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        self.lbl_expense = QLabel("Расходы: 0")
-        self.lbl_expense.setStyleSheet("font-size: 14px; color: white;")
-        self.lbl_expense.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        self.lbl_balance = QLabel("Баланс: 0")
-        self.lbl_balance.setStyleSheet("font-size: 14px; color: white;")
-        self.lbl_balance.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        # Add them to header directly (no outer rounded box)
+        header_layout.addWidget(inc_frame)
+        header_layout.addWidget(exp_frame)
+        header_layout.addWidget(bal_frame)
 
-        metrics_layout.addWidget(self.lbl_income)
-        metrics_layout.addWidget(self.lbl_expense)
-        metrics_layout.addWidget(self.lbl_balance)
-
-        stats_layout.addWidget(metrics_box)
-
-        header_layout.addWidget(stats_frame)
-
-        # ensure header has flexible spacing after metrics
         header_layout.addStretch()
 
-        # Period + Sort combined into a single control: a tool button that shows range text
-        # and exposes a menu action to sort by date. The DateRangeEdit remains the range picker.
+        # Period control: single styled button ("Фильтр по дате") which opens DateRangeEdit popup
         self.period_range = DateRangeEdit()
         # Default to current month range
         try:
@@ -460,35 +449,33 @@ class GovernorCabinetWindow(QMainWindow):
         except Exception:
             pass
 
-        # Create a tool button that displays the selected range and has a menu for actions
+        # Create a primary-style push button for filtering (same style as import)
         try:
-            btn_text = self.period_range._edit.text() if hasattr(self.period_range, '_edit') else 'Период'
+            btn_text = self.period_range._edit.text() if hasattr(self.period_range, '_edit') else 'Фильтр по дате'
         except Exception:
-            btn_text = 'Период'
-
-        self.period_button = QToolButton()
-        self.period_button.setText(btn_text)
-        self.period_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_text = 'Фильтр по дате'
+        self.period_button = QPushButton(btn_text)
+        # Apply same style as import/launcher buttons
         try:
-            # Clicking the main area opens the date range popup
-            self.period_button.clicked.connect(lambda: self.period_range.showPopup())
+            self.period_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #2a82da;
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 8px 15px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #3a92ea;
+                }
+            """)
         except Exception:
             pass
-
-        # Create a menu with a single action: sort by date
+        self.period_button.setCursor(Qt.CursorShape.PointingHandCursor)
         try:
-            menu = QMenu(self)
-            act_sort = menu.addAction("Сортировать по дате")
-            act_sort.triggered.connect(lambda: self._sort_transactions_by_date(descending=False))
-            self.period_button.setMenu(menu)
-            # Use MenuButtonPopup so clicking the arrow shows the menu while clicking the button runs the main action
-            try:
-                self.period_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-            except Exception:
-                try:
-                    self.period_button.setPopupMode(QToolButton.MenuButtonPopup)
-                except Exception:
-                    pass
+            # Anchor the period_range popup to the header button so it opens next to it
+            self.period_button.clicked.connect(lambda: self.period_range.showPopup(anchor_widget=self.period_button))
         except Exception:
             pass
 
@@ -497,17 +484,17 @@ class GovernorCabinetWindow(QMainWindow):
             def _on_range_changed(s, e):
                 try:
                     txt = self.period_range._edit.text() if hasattr(self.period_range, '_edit') else ''
-                    self.period_button.setText(txt or 'Период')
+                    # keep button label fixed to 'Фильтр по дате' but show selected range in tooltip
+                    self.period_button.setToolTip(txt or '')
                 except Exception:
                     pass
                 try:
-                    # When range changes, update stats and hide/show rows as needed
+                    # Update the stats table and re-run transactions sorting/filtering
                     self.update_stats_table()
-                except Exception:
-                    pass
-                try:
-                    # Also sort visible rows automatically when range changed
-                    self._sort_transactions_by_date(descending=False)
+                    try:
+                        self._sort_transactions_by_date()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             self.period_range.range_changed.connect(_on_range_changed)
@@ -562,6 +549,26 @@ class GovernorCabinetWindow(QMainWindow):
 
         buttons_layout.addWidget(btn_back)
         buttons_layout.addWidget(btn_import)
+
+        # Export button: same style as Import/launcher buttons, placed under Import
+        btn_export = QPushButton("Экспорт")
+        btn_export.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_export.setStyleSheet("""
+            QPushButton {
+                background-color: #2a82da;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #3a92ea;
+            }
+        """)
+        btn_export.clicked.connect(lambda: self.export_transactions())
+
+        buttons_layout.addWidget(btn_export)
 
         header_layout.addLayout(buttons_layout)
 
@@ -969,10 +976,7 @@ class GovernorCabinetWindow(QMainWindow):
                     # Fallback to immediate call
                     self._process_pending_suggestions()
             except Exception:
-                try:
-                    self._show_suggestions_for_editor(le, le.text())
-                except Exception:
-                    pass
+                pass
         except Exception:
             pass
 
@@ -1000,8 +1004,25 @@ class GovernorCabinetWindow(QMainWindow):
     def _show_suggestions_for_editor(self, le, text):
         """Minimal: get items from right table, filter by text and show popup.
         Closes popup when there are no suggestions or editor is None.
+        Added readiness checks and deferred-show to avoid popup appearing at (0,0).
         """
         try:
+            # Do not show suggestions while suspended (during init/import)
+            if getattr(self, '_suspend_suggestions', False):
+                try:
+                    print('[Governor][PopupFix] suggestions suspended, skip show')
+                except Exception:
+                    pass
+                return
+
+            # Also avoid showing while performing a full import/apply
+            if getattr(self, '_importing', False):
+                try:
+                    print('[Governor][PopupFix] importing in progress, skip show')
+                except Exception:
+                    pass
+                return
+
             try:
                 print(f"[Governor] _show_suggestions_for_editor called. editor={le} text='{text}'")
             except Exception:
@@ -1028,11 +1049,32 @@ class GovernorCabinetWindow(QMainWindow):
             except Exception:
                 pass
 
+            # Acquire (or lazily create) the popup instance
             popup_obj = getattr(self, '_suggestions_popup', None)
             try:
                 print(f"[Governor] popup_obj repr={repr(popup_obj)} type={type(popup_obj)} id={(id(popup_obj) if popup_obj is not None else None)}")
             except Exception:
                 pass
+
+            # If popup not yet created, abort (do not attempt lazy creation here)
+            if popup_obj is None:
+                try:
+                    print('[Governor] suggestions popup not initialized -> abort show')
+                except Exception:
+                    pass
+                return
+
+            if le is None or popup_obj is None:
+                try:
+                    print("[Governor] No editor or suggestions_popup not initialized -> hide and return")
+                except Exception:
+                    pass
+                except Exception as e:
+                    try:
+                        print(f"[Governor] Failed lazy create popup: {e}")
+                    except Exception:
+                        pass
+                    return
 
             if le is None or popup_obj is None:
                 try:
@@ -1045,6 +1087,24 @@ class GovernorCabinetWindow(QMainWindow):
                     except Exception:
                         pass
                 return
+
+            # If editor or its top-level window are not yet visible/ready, defer show
+            try:
+                widget_ready = False
+                if hasattr(le, 'isVisible') and le.isVisible():
+                    wnd = le.window()
+                    if wnd is not None and hasattr(wnd, 'isVisible') and wnd.isVisible():
+                        widget_ready = True
+                if not widget_ready:
+                    # Defer and allow layout/window to finish so mapToGlobal returns sane coords
+                    try:
+                        print('[Governor][PopupFix] editor/window not ready - deferring popup show')
+                    except Exception:
+                        pass
+                    QTimer.singleShot(120, lambda: self._process_pending_suggestions())
+                    return
+            except Exception:
+                pass
 
             # Source suggestions from items_table (right-hand table)
             try:
@@ -1102,22 +1162,30 @@ class GovernorCabinetWindow(QMainWindow):
                             self._last_suggestions_shown_at = time.time()
                         except Exception:
                             pass
-                        # Show popup; the popup itself will log its geometry when shown
-                        popup_obj.show_suggestions(filtered, le)
-                        # Ensure editor keeps keyboard focus: restore focus deferred and
-                        # suppress reopen briefly to avoid focus-in triggering another show.
+
+                        # Try to position popup near editor BEFORE showing to avoid (0,0) fallback
                         try:
-                            self._suppress_reopen_until = time.time() + 0.2
+                            global_pos = le.mapToGlobal(QPoint(0, le.height()))
+                            # If mapToGlobal returns 0,0 it's likely not ready - but we checked earlier
                             try:
-                                print(f"[Governor] set suppress_reopen_until after show: {self._suppress_reopen_until}")
+                                popup_obj.move(global_pos)
                             except Exception:
                                 pass
                         except Exception:
                             pass
-                        # Intentionally do NOT force focus back to the editor here. Rely on
-                        # WA_ShowWithoutActivating on the popup and governor-side suppression
-                        # so the editor retains keyboard focus naturally.
-                        pass
+
+                        # Finally show popup; the popup itself will handle focus flags
+                        try:
+                            popup_obj.show_suggestions(filtered, le)
+                            print('[Governor][PopupFix] called show_suggestions')
+                        except Exception as e:
+                            print(f"[Governor] Error showing suggestions popup: {e}")
+
+                        # Ensure editor keeps keyboard focus: suppress reopen briefly to avoid focus-in triggering another show.
+                        try:
+                            self._suppress_reopen_until = time.time() + 0.2
+                        except Exception:
+                            pass
                 except Exception as e:
                     print(f"[Governor] Error showing suggestions popup: {e}")
             else:
@@ -2103,6 +2171,7 @@ class GovernorCabinetWindow(QMainWindow):
                             w_qty.setVisible(True)
                         except Exception:
                             pass
+
             except Exception:
                 pass
 
@@ -2203,6 +2272,11 @@ class GovernorCabinetWindow(QMainWindow):
         except Exception:
             pass
         self.setCursor(Qt.CursorShape.ArrowCursor)
+        # End of import/update - re-enable suggestions
+        try:
+            self._suspend_suggestions = False
+        except Exception:
+            pass
 
     def update_totals(self):
         """Recompute totals for header labels: income, expense, balance."""
@@ -2395,11 +2469,21 @@ class GovernorCabinetWindow(QMainWindow):
         if self._auto_loaded_once:
             return
         self._auto_loaded_once = True
+        # Set importing flag before starting import to prevent suggestion popups
+        try:
+            self._importing = True
+        except Exception:
+            pass
         self._start_import_with_overlay()
 
     def show_calendar_popup(self, sender_widget):
-        """Standard calendar popup for the date button."""
-        # This was missing after refactor if it was removed or renamed
+        """Standard calendar popup for the date button. Position under the button and clamp to screen.
+        """
+        # Diagnostic log to help debug positioning issues
+        try:
+            print(f"[Governor] show_calendar_popup called. sender={repr(sender_widget)}, sender.rect={getattr(sender_widget, 'rect', None)}")
+        except Exception:
+            pass
         cal_widget = CustomCalendarWidget(parent=None)
         cal_widget.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
 
@@ -2422,9 +2506,53 @@ class GovernorCabinetWindow(QMainWindow):
 
         cal_widget.date_selected.connect(on_date_selected)
 
-        # Position the popup
-        pos = sender_widget.mapToGlobal(QPoint(0, sender_widget.height()))
-        cal_widget.move(pos)
+        # Position: compute global bottom-left of the sender and clamp to screen
+        try:
+            cal_widget.adjustSize()
+            btn_rect = sender_widget.rect()
+            bottom_left = sender_widget.mapToGlobal(btn_rect.bottomLeft())
+            x = bottom_left.x()
+            y = bottom_left.y()
+
+            try:
+                screen = sender_widget.screen()
+                if screen is None:
+                    screen = QApplication.primaryScreen()
+                geom = screen.availableGeometry()
+                try:
+                    print(f"[Governor] computed bottom_left=({x},{y}), popup_size=({cal_widget.width()},{cal_widget.height()}), screen_geom=({geom.left()},{geom.top()},{geom.right()},{geom.bottom()})")
+                except Exception:
+                    pass
+                # clamp right edge
+                if x + cal_widget.width() > geom.right():
+                    x = max(geom.left(), geom.right() - cal_widget.width())
+                # if it doesn't fit below, show above
+                if y + cal_widget.height() > geom.bottom():
+                    top_left = sender_widget.mapToGlobal(btn_rect.topLeft())
+                    y = top_left.y() - cal_widget.height()
+                    if y < geom.top():
+                        y = geom.top()
+                # ensure not off left/top
+                if x < geom.left():
+                    x = geom.left()
+                if y < geom.top():
+                    y = geom.top()
+            except Exception:
+                pass
+
+            cal_widget.move(QPoint(x, y))
+        except Exception:
+            try:
+                # fallback: position at sender global pos
+                pos = sender_widget.mapToGlobal(QPoint(0, sender_widget.height()))
+                try:
+                    print(f"[Governor] fallback position used: {pos}")
+                except Exception:
+                    pass
+                cal_widget.move(pos)
+            except Exception:
+                pass
+
         cal_widget.show()
 
     def _sort_transactions_by_date(self, descending=False):
@@ -2456,15 +2584,7 @@ class GovernorCabinetWindow(QMainWindow):
                         date_text = ''
                         if c_date:
                             btns = c_date.findChildren(QPushButton)
-                            if btns:
-                                date_text = btns[0].text()
-                            else:
-                                try:
-                                    de = c_date.findChild(DateEditClickable)
-                                    if de:
-                                        date_text = de.date().toString('dd.MM.yyyy')
-                                except Exception:
-                                    pass
+                            date_text = btns[0].text() if btns else ''
                         qd = QDate.fromString(date_text, 'dd.MM.yyyy') if date_text else None
                         if qd:
                             if start and qd < start:
@@ -2775,11 +2895,11 @@ class GovernorCabinetWindow(QMainWindow):
                     avg = int(v['total'] / v['qty']) if v['qty'] else 0
                 except Exception:
                     avg = 0
-                it_avg = QTableWidgetItem(_format_display_amount(avg))
+                it_avg = QTableWidgetItem(_format_display_amount(avg, show_sign=False))
                 it_avg.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 it_avg.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
                 self.stats_table.setItem(row_idx, 2, it_avg)
-                it_sum = QTableWidgetItem(_format_display_amount(v['total']))
+                it_sum = QTableWidgetItem(_format_display_amount(v['total'], show_sign=False))
                 it_sum.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 it_sum.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
                 self.stats_table.setItem(row_idx, 3, it_sum)
@@ -2900,3 +3020,179 @@ class GovernorCabinetWindow(QMainWindow):
             return super().showEvent(event)
         except Exception:
             return
+
+    def export_transactions(self):
+        """Export visible transaction rows to a .txt file with totals appended.
+        Writes a human-friendly aligned table where each column starts at the same position.
+        """
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        import os
+
+        sep = ' | '
+
+        # Gather visible rows first so we can compute column widths
+        rows = []
+        headers = ["№", "Дата", "Тип", "Предмет|Услуга", "Кол-во", "Цена", "Сумма"]
+
+        # Build rows array
+        for r in range(self.trans_table.rowCount() - 1):
+            if self.trans_table.isRowHidden(r):
+                continue
+
+            row_cells = []
+            for c in range(7):
+                text_val = ''
+                item = self.trans_table.item(r, c)
+                if item and item.text():
+                    text_val = item.text()
+                else:
+                    widget = self.trans_table.cellWidget(r, c)
+                    if widget:
+                        try:
+                            btn = widget.findChild(QPushButton)
+                            if btn and btn.text():
+                                text_val = btn.text()
+                            else:
+                                le = widget.findChild(QLineEdit)
+                                if le and le.text():
+                                    text_val = le.text()
+                                else:
+                                    sp = widget.findChild(QAbstractSpinBox)
+                                    if sp is not None:
+                                        try:
+                                            text_val = str(sp.value())
+                                        except Exception:
+                                            text_val = ''
+                                    else:
+                                        combo = widget.findChild(QComboBox)
+                                        if combo and combo.currentText():
+                                            text_val = combo.currentText()
+                                        else:
+                                            date_w = widget.findChild(QDateEdit)
+                                            if date_w:
+                                                try:
+                                                    text_val = date_w.date().toString("dd.MM.yyyy")
+                                                except Exception:
+                                                    text_val = ''
+                                            else:
+                                                text_val = ''
+                        except Exception:
+                            text_val = ''
+                    else:
+                        text_val = ''
+
+                # Clean unwanted whitespace characters
+                if isinstance(text_val, str):
+                    text_val = text_val.replace('\t', ' ').replace('\n', ' ').strip()
+                else:
+                    text_val = str(text_val)
+
+                row_cells.append(text_val)
+
+            rows.append(row_cells)
+
+        # Compute column widths based on headers and data
+        col_count = len(headers)
+        widths = [0] * col_count
+        for ci in range(col_count):
+            maxw = len(headers[ci])
+            for r in rows:
+                try:
+                    maxw = max(maxw, len(r[ci]))
+                except Exception:
+                    pass
+            widths[ci] = maxw
+
+        # Use alignment per column: right for numeric-ish, center for type, left for text
+        aligns = ['>' , '<', '^', '<', '>', '>', '>']
+
+        # Open Save As dialog
+        file_path, _ = QFileDialog.getSaveFileName(self, "Сохранить транзакции", "", "Text Files (*.txt);;All Files (*)")
+        if not file_path:
+            return
+        if not file_path.lower().endswith('.txt'):
+            file_path += '.txt'
+
+        try:
+            with open(file_path, 'w', encoding='utf-8') as file:
+                # Write header line with padding
+                hdr_parts = []
+                for i, h in enumerate(headers):
+                    align = aligns[i] if i < len(aligns) else '<'
+                    fmt = f"{{:{align}{widths[i]}}}"
+                    hdr_parts.append(fmt.format(h))
+                file.write(sep.join(hdr_parts) + '\n')
+
+                # Underline header
+                underline = []
+                for w in widths:
+                    underline.append('-' * w)
+                file.write(sep.join(underline) + '\n')
+
+                # Write rows with same padding
+                for rdata in rows:
+                    parts = []
+                    for i, cell in enumerate(rdata):
+                        align = aligns[i] if i < len(aligns) else '<'
+                        fmt = f"{{:{align}{widths[i]}}}"
+                        parts.append(fmt.format(cell))
+                    file.write(sep.join(parts) + '\n')
+
+                # Totals (strip duplicate prefixes if any)
+                def _strip_label_prefix(lbl_text, prefix):
+                    if not lbl_text:
+                        return ''
+                    t = lbl_text
+                    if t.lower().startswith(prefix.lower()):
+                        return t.split(':', 1)[1].strip()
+                    return t
+
+                try:
+                    income_label = getattr(self, 'lbl_income', None)
+                    expense_label = getattr(self, 'lbl_expense', None)
+                    balance_label = getattr(self, 'lbl_balance', None)
+
+                    income_text = _strip_label_prefix(income_label.text() if income_label else '', 'Доходы:')
+                    expense_text = _strip_label_prefix(expense_label.text() if expense_label else '', 'Расходы:')
+                    balance_text = _strip_label_prefix(balance_label.text() if balance_label else '', 'Баланс:')
+
+                    file.write('\n')
+                    file.write(f"Доходы: {income_text}\n")
+                    file.write(f"Расходы: {expense_text}\n")
+                    file.write(f"Баланс: {balance_text}\n")
+                except Exception:
+                    try:
+                        self.update_totals()
+                        file.write('\n')
+                        file.write(f"Доходы: {getattr(self, 'lbl_income', QTableWidgetItem()).text()}\n")
+                        file.write(f"Расходы: {getattr(self, 'lbl_expense', QTableWidgetItem()).text()}\n")
+                        file.write(f"Баланс: {getattr(self, 'lbl_balance', QTableWidgetItem()).text()}\n")
+                    except Exception:
+                        pass
+
+            # Styled success message
+            try:
+                msg = QMessageBox(self)
+                msg.setWindowTitle("Экспорт завершен")
+                msg.setText(f"Транзакции успешно экспортированы в файл:\n{os.path.basename(file_path)}")
+                msg.setIcon(QMessageBox.Icon.Information)
+                msg.setStyleSheet("QMessageBox { background-color: #1f1f1f; color: #ffffff; } QPushButton { background-color: #2a82da; color: white; padding: 6px 12px; border-radius: 4px; }")
+                msg.exec()
+            except Exception:
+                try:
+                    QMessageBox.information(self, "Экспорт завершен", f"Транзакции успешно экспортированы в файл:\n{os.path.basename(file_path)}")
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                err = QMessageBox(self)
+                err.setWindowTitle("Ошибка экспорта")
+                err.setText(f"Не удалось экспортировать транзакции:\n{str(e)}")
+                err.setIcon(QMessageBox.Icon.Critical)
+                err.setStyleSheet("QMessageBox { background-color: #1f1f1f; color: #ffffff; } QPushButton { background-color: #2a82da; color: white; padding: 6px 12px; border-radius: 4px; }")
+                err.exec()
+            except Exception:
+                try:
+                    QMessageBox.critical(self, "Ошибка экспорта", f"Не удалось экспортировать транзакции:\n{str(e)}")
+                except Exception:
+                    pass
