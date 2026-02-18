@@ -1,10 +1,13 @@
 import sys
 import subprocess
+import os
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QFrame, QSizePolicy, QMessageBox)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
 from modules.core.utils import get_resource_path
+from modules.core.firebase_service import resolve_user_permissions, user_has_permission
+from modules.core.firebase_service import can_open_role_settings
 
 class LauncherWindow(QMainWindow):
     launch_main = pyqtSignal(dict)
@@ -12,9 +15,12 @@ class LauncherWindow(QMainWindow):
     def __init__(self, user_data):
         super().__init__()
         self.user_data = user_data
-        
-        # Check if user is admin based on data
-        self.is_admin = self.user_data.get('Role') == 'Admin'
+
+        # Resolve permissions for UI decisions
+        self.resolved = resolve_user_permissions(self.user_data)
+        # Consider admin only if admin.full permission is present (role defs populate this permission).
+        # This avoids accidentally granting admin rights if a legacy 'Role' field contains 'Admin'.
+        self.is_admin = 'admin.full' in self.resolved.get('permissions', set())
 
         self.setWindowTitle("GIH - Government Industrial Helper")
         self.setWindowIcon(QIcon(get_resource_path("assets/image.png")))
@@ -76,28 +82,33 @@ class LauncherWindow(QMainWindow):
 
         top_layout.addStretch()
         
-        # Admin Panel Button (Visible only to admins) - MOVED TO HEADER
-        if self.is_admin:
-            self.btn_admin = QPushButton("🛡 Админ панель")
-            self.btn_admin.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.btn_admin.clicked.connect(self.open_admin_panel)
-            self.btn_admin.setStyleSheet("""
-                QPushButton {
-                    background-color: #d63031; 
-                    color: white; 
-                    border: none; 
-                    border-radius: 12px; 
-                    font-weight: bold; 
-                    font-size: 13px; 
-                    min-width: 130px;
-                    padding: 8px; 
-                    outline: none;
-                }
-                QPushButton:hover { background-color: #e74c3c; }
-            """)
-            top_layout.addWidget(self.btn_admin)
+        # Admin Panel Button removed — admins no longer see a separate admin panel here
 
-        user_info = QPushButton(f"👤 {self.user_data.get('Username', 'admin')} | {self.user_data.get('Role', 'Admin')}")
+        # Role Settings: visible to users allowed by can_open_role_settings
+        try:
+            from modules.ui.widgets.role_settings_dialog import RoleSettingsDialog
+            if can_open_role_settings(self.user_data):
+                self.btn_roles = QPushButton("⚙️ Настройка ролей")
+                self.btn_roles.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.btn_roles.setStyleSheet("""
+                    QPushButton { background-color: #2a82da; color: white; border-radius: 10px; padding: 8px; min-width: 140px; }
+                    QPushButton:hover { background-color: #3a92ea; }
+                """)
+                self.btn_roles.clicked.connect(self.open_role_settings)
+                top_layout.addWidget(self.btn_roles)
+        except Exception:
+            # ignore if widget import fails
+            pass
+
+        # Display resolved primary role for clarity (human-readable)
+        role_label_map = {
+            'Admin': 'Администратор', 'Governor': 'Губернатор', 'Minister': 'Министр',
+            'Head': 'Начальник', 'Deputy': 'Заместитель', 'Employee': 'Подчиненный',
+            'Visitor': 'Посетитель', 'UT_Role': 'УТ'
+        }
+        primary_role_key = next(iter(self.resolved.get('roles')), None)
+        primary_role = role_label_map.get(primary_role_key, self.user_data.get('Role', primary_role_key or 'Visitor'))
+        user_info = QPushButton(f"👤 {self.user_data.get('Username', '')} | {primary_role}")
         user_info.setStyleSheet("""
             QPushButton {
                 padding: 8px; 
@@ -134,21 +145,28 @@ class LauncherWindow(QMainWindow):
 
         # Кнопки модулей
         self.btn_labor = QPushButton("👥 Управление трудом")
+        # enable only if explicit view permission (ut.view) or admin/full
+        perms = self.resolved.get('permissions', set())
+        # Use admin.full (not role string) as override
+        has_ut_access = ('ut.view' in perms) or ('admin.full' in perms)
+        if not has_ut_access:
+            self.btn_labor.setEnabled(False)
+            self.btn_labor.setToolTip('Доступ в Управление трудом закрыт')
         self.btn_labor.clicked.connect(self.run_labor_management)
         modules_layout.addWidget(self.btn_labor)
         
         # New Governor Cabinet Button
         self.btn_governor = QPushButton("🏛 Кабинет Губернатора")
-        # Check permissions
-        if not self.is_admin:
+        # Governor or Admin only
+        if not (('governor.access' in self.resolved.get('permissions', set())) or self.is_admin or ('Governor' in self.resolved.get('roles'))):
             self.btn_governor.setEnabled(False)
             self.btn_governor.setStyleSheet(self.btn_governor.styleSheet() + "background-color: #555; color: #888;")
-            self.btn_governor.setToolTip("Доступно только администраторам")
+            self.btn_governor.setToolTip("Доступно только губернатору и администратору")
         
         self.btn_governor.clicked.connect(self.open_governor_cabinet)
         modules_layout.addWidget(self.btn_governor)
 
-        self.btn_gov = QPushButton("⚡ GovYPT (старая версия)")
+        self.btn_gov = QPushButton("🏛 Министерство Финансов")
         self.btn_gov.clicked.connect(self.run_gov_legacy)
         modules_layout.addWidget(self.btn_gov)
 
@@ -204,12 +222,17 @@ class LauncherWindow(QMainWindow):
 
     def run_gov_legacy(self):
         try:
+            # Show a harmless stub for Министерство Финансов.
+            # If a legacy stub script exists (legacy/MINFIN_STUB.py), launch it; otherwise show informational message.
+            import os
             python_exec = sys.executable
-            # GOV.py is now in legacy folder
-            script_path = get_resource_path("legacy/GOV.py")
-            subprocess.Popen([python_exec, script_path])
+            script_path = get_resource_path("legacy/MINFIN_STUB.py")
+            if os.path.exists(script_path):
+                subprocess.Popen([python_exec, script_path])
+            else:
+                QMessageBox.information(self, "Министерство Финансов", "Министерство Финансов — заглушка")
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось запустить GOV.py:\n{e}")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось запустить Министерство Финансов:\n{e}")
 
     def open_governor_cabinet(self):
         try:
@@ -234,22 +257,20 @@ class LauncherWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open Governor Cabinet:\n{e}")
 
-    def open_admin_panel(self):
+    def open_role_settings(self):
         try:
-            from modules.ui.auth import AdminPanel
-            # Pass a flag or adjust init to center on screen if parent is passed but we want absolute center
-            # Actually, per request "center of application", passing self (window) usually centers on window.
-            # But the user specifically asked "fix in center of application". 
-            # The current implementation in AdminPanel tries to position under the button if parent has btn_admin.
-            # We will modify AdminPanel to ignore button position and center on parent window.
-            AdminPanel(self, center_on_parent=True).exec()
+            from modules.ui.widgets.role_settings_dialog import RoleSettingsDialog
+            dlg = RoleSettingsDialog(parent=self, current_user=self.user_data)
+            dlg.exec()
         except Exception as e:
-             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть админ панель:\n{e}")
+            QMessageBox.critical(self, "Ошибка", f"Не удалось открыть Настройку ролей:\n{e}")
 
     def change_password(self):
         try:
             from modules.ui.auth import ChangePasswordDialog
-            dlg = ChangePasswordDialog(self.user_data.get('Username'), parent=self)
+            # Normalize username field - Firestore uses 'username' but some places use 'Username' or 'login'
+            uname = self.user_data.get('username') or self.user_data.get('Username') or self.user_data.get('login') or ''
+            dlg = ChangePasswordDialog(uname, parent=self)
             if dlg.exec():
                 QMessageBox.information(self, "Успех", "Пароль успешно изменен!")
         except Exception as e:

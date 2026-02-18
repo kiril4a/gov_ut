@@ -11,6 +11,7 @@ from modules.core.config import ARTICLES
 from modules.ui.auth import AdminPanel
 from modules.core.google_service import GoogleService
 from modules.core.utils import get_resource_path
+from modules.core.firebase_service import resolve_user_permissions
 import csv
 
 # Worker for threaded tasks
@@ -271,10 +272,21 @@ class MainWindow(QMainWindow):
     def __init__(self, user_data):
         super().__init__()
         self.user_data = user_data
-        self.is_admin = user_data.get('Role') == 'Admin'
-        self.can_edit = self.is_admin or user_data.get('Role') == 'Editor' # Editors can edit too?
-        # Assuming permissions are handled by role check
-        
+        # Resolve permissions via Firestore model
+        self.resolved = resolve_user_permissions(self.user_data)
+        self.is_admin = ('admin.full' in self.resolved.get('permissions', set())) or ('Admin' in self.resolved.get('roles', set()))
+
+        # Department-scoped permissions for УТ
+        perms = self.resolved.get('permissions', set())
+        # View permission is required to access УТ features
+        self.can_view = ('ut.view' in perms) or self.is_admin
+        # Upload = ability to create/add sheets (export/new sheet/import txt)
+        self.can_upload = ('ut.upload' in perms) or self.is_admin
+        # Edit existing sheets
+        self.can_edit = ('ut.edit' in perms) or self.is_admin
+        # Sync operations (special actions)
+        self.can_sync = ('ut.sync' in perms) or self.is_admin
+
         # State
         self.data = []
         self.filtered_data = []
@@ -302,16 +314,18 @@ class MainWindow(QMainWindow):
         self.current_sort_asc = True
 
         # Permissions
-        if self.is_admin:
-            self.can_edit = True
-            self.can_upload = True
-        else:
-            ce_val = str(user_data.get('CanEdit', '0')).lower()
-            self.can_edit = ce_val in ('1', 'true', 'yes', 'on')
-            
-            # Allow upload if permission is set to true
-            cu_val = str(user_data.get('CanUpload', '0')).lower()
-            self.can_upload = cu_val in ('1', 'true', 'yes', 'on')
+        # Legacy fallback: only apply legacy CanEdit/CanUpload if resolved permissions are empty
+        if not perms:
+            if self.is_admin:
+                self.can_edit = True
+                self.can_upload = True
+            else:
+                ce_val = str(user_data.get('CanEdit', '0')).lower()
+                self.can_edit = ce_val in ('1', 'true', 'yes', 'on')
+                
+                # Allow upload if legacy flag is set to true
+                cu_val = str(user_data.get('CanUpload', '0')).lower()
+                self.can_upload = cu_val in ('1', 'true', 'yes', 'on')
             
         # Default view permission is implicit
             
@@ -1073,6 +1087,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(btn_local)
         
         btn_google = QPushButton("☁ Синхронизация (Google Sheets)")
+        # require view permission to sync/load from Google
+        if not self.can_view:
+            btn_google.setEnabled(False)
+            btn_google.setToolTip("Нет прав на просмотр/синхронизацию из Google")
         btn_google.clicked.connect(lambda: [dialog.close(), self.connect_google_dialog()])
         layout.addWidget(btn_google)
         
