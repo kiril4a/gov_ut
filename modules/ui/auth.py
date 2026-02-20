@@ -1,10 +1,47 @@
 import hashlib
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, 
-                             QMessageBox, QCheckBox, QDialog, QFrame, QHBoxLayout)
-from PyQt6.QtCore import Qt, pyqtSignal
+                             QMessageBox, QCheckBox, QDialog, QFrame, QHBoxLayout, QApplication)
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QObject
 from PyQt6.QtGui import QIcon, QPainter, QColor
-from modules.core.google_service import GoogleService
 from modules.core.utils import get_resource_path
+from modules.core.firebase_service import list_users, get_user, create_user, update_user_password, save_user_roles, resolve_user_permissions
+
+class LoginWorker(QThread):
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def __init__(self, username, password):
+        super().__init__()
+        self.username = username
+        self.password = password
+
+    def run(self):
+        try:
+            # Use Firestore users collection exclusively for authentication
+            fb_user = None
+            try:
+                fb_user = get_user(self.username)
+            except Exception as e:
+                fb_user = None
+
+            if not fb_user:
+                # No such user in Firestore
+                self.finished.emit({})
+                return
+
+            # authenticate against Firestore
+            input_hash = hashlib.sha256(self.password.encode()).hexdigest()
+            if str(fb_user.get('hashpassword', '')) == input_hash:
+                perms = resolve_user_permissions(fb_user)
+                fb_user['resolved_permissions'] = perms
+                self.finished.emit(fb_user)
+                return
+
+            # Wrong password
+            self.finished.emit({})
+
+        except Exception as e:
+            self.error.emit(str(e))
 
 class SuccessOverlay(QDialog):
     def __init__(self, parent=None, message=""):
@@ -111,7 +148,6 @@ class LoginWindow(QWidget):
         super().__init__()
         self.setWindowTitle("Вход в систему")
         self.setWindowIcon(QIcon(get_resource_path("assets/image.png")))
-        self.google_service = GoogleService()
         self.resize(400, 350)
         self.user_data = None
         
@@ -201,6 +237,8 @@ class LoginWindow(QWidget):
         self.setLayout(layout)
 
     def login(self):
+        from modules.ui.loading_overlay import LoadingOverlay
+        
         username = self.username_input.text().strip()
         password = self.password_input.text().strip()
         
@@ -209,38 +247,44 @@ class LoginWindow(QWidget):
             return
 
         self.status_label.setText("Подключение...")
-        # Force UI update needed here normally, but single thread blocks anyway.
-        # We'll rely on fast auth or just blocking is fine for MVP.
+        self.loading_overlay = LoadingOverlay(self, "Вход...")
+        self.loading_overlay.showOverlay()
         
-        try:
-            users = self.google_service.get_users()
-            input_hash = hashlib.sha256(password.encode()).hexdigest()
-            
-            found = False
-            for user in users:
-                if str(user.get('Username')) == username and str(user.get('PasswordHash')) == input_hash:
-                    # Ensure defaults
-                    user.setdefault('CanEdit', 0)
-                    user.setdefault('CanUpload', 0)
-                    user.setdefault('Role', 'User')
-                    self.user_data = user
-                    found = True
-                    break
-            
-            if found:
-                self.login_success.emit(self.user_data)
-                self.close()
-            else:
-                self.status_label.setText("Неверные данные")
-                
-        except Exception as e:
-            self.status_label.setText(f"Ошибка соединения: {e}")
+        # Disable inputs
+        self.login_btn.setEnabled(False)
+        self.username_input.setEnabled(False)
+        self.password_input.setEnabled(False)
+
+        self.worker = LoginWorker(username, password)
+        self.worker.finished.connect(self.on_login_finished)
+        self.worker.error.connect(self.on_login_error)
+        self.worker.start()
+
+    def on_login_finished(self, user_data):
+        self._cleanup_login_ui()
+        if user_data:
+            self.user_data = user_data
+            self.login_success.emit(self.user_data)
+            self.close()
+        else:
+            self.status_label.setText("Неверные данные")
+
+    def on_login_error(self, error_msg):
+        self._cleanup_login_ui()
+        self.status_label.setText(f"Ошибка соединения: {error_msg}")
+
+    def _cleanup_login_ui(self):
+        if hasattr(self, 'loading_overlay'):
+            self.loading_overlay.hideOverlay()
+        
+        self.login_btn.setEnabled(True)
+        self.username_input.setEnabled(True)
+        self.password_input.setEnabled(True)
 
 class AdminPanel(QDialog):
     def __init__(self, parent=None, center_on_parent=False):
         super().__init__(parent)
         self.setWindowTitle("Админ панель")
-        self.google_service = GoogleService()
         self.setFixedSize(400, 500)
         
         # Window flags to make it popup and frameless
@@ -383,17 +427,20 @@ class AdminPanel(QDialog):
             return
             
         try:
-            role = "Admin" if self.chk_admin.isChecked() else "User"
-            can_edit = "1" if self.chk_edit.isChecked() else "0"
-            can_upload = "1" if self.chk_upload.isChecked() else "0"
-            
-            self.google_service.create_user(username, password, role, can_edit, can_upload)
-            
+            role = "Admin" if self.chk_admin.isChecked() else None
+            can_edit = True if self.chk_edit.isChecked() else False
+            # Create user in Firestore only; Google Sheets no longer used for users
+            try:
+                perms = ['ut.access'] if can_edit else []
+                create_user(username, password, role=role, departments=[], permissions=perms)
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось создать пользователя в БД: {e}")
+                return
+
             success_dialog = SuccessOverlay(self, f"Пользователь {username} создан")
             success_dialog.exec()
-            
             self.accept()
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось создать пользователя: {e}")
 
@@ -402,7 +449,6 @@ class ChangePasswordDialog(QDialog):
         super().__init__(parent)
         self.username = username
         self.setWindowTitle("Смена пароля")
-        self.google_service = GoogleService()
         self.setFixedSize(350, 300)
         
         # Consistent Menu Style
@@ -497,26 +543,25 @@ class ChangePasswordDialog(QDialog):
             return
             
         try:
-            users = self.google_service.get_users()
-            user_record = next((u for u in users if str(u.get('Username')) == self.username), None)
-            
-            if not user_record:
-                QMessageBox.critical(self, "Ошибка", "Пользователь не найден")
+            # Update password in Firestore only
+            fb = get_user(self.username)
+            if not fb:
+                QMessageBox.critical(self, "Ошибка", "Пользователь не найден в БД")
                 return
 
             old_hash = hashlib.sha256(old_p.encode()).hexdigest()
-            if str(user_record.get('PasswordHash')) != old_hash:
+            if str(fb.get('hashpassword', '')) != old_hash:
                 QMessageBox.warning(self, "Ошибка", "Старый пароль неверен")
                 return
-                
-            self.google_service.update_user_password(self.username, new_p)
-            
+
+            update_user_password(self.username, new_p)
+
             # Close the password dialog FIRST
             self.close()
 
             success_dialog = SuccessOverlay(self.parent(), "Пароль успешно изменен")
             success_dialog.exec()
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сменить пароль: {e}")
 
@@ -524,7 +569,6 @@ class CreateUserDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Создать пользователя")
-        self.google_service = GoogleService()
         self.setFixedSize(350, 450)
         
         # User requested style: Menu-like, centered on application, closes on outside click
@@ -651,12 +695,16 @@ class CreateUserDialog(QDialog):
             return
             
         try:
-            role = "Admin" if self.chk_admin.isChecked() else "User"
-            can_edit = "1" if self.chk_edit.isChecked() else "0"
-            can_upload = "1" if self.chk_upload.isChecked() else "0"
-            
-            self.google_service.create_user(username, password, role, can_edit, can_upload)
-            
+            role = "Admin" if self.chk_admin.isChecked() else None
+            can_edit = True if self.chk_edit.isChecked() else False
+            # Create user in Firestore only; Google Sheets no longer used for users
+            try:
+                perms = ['ut.access'] if can_edit else []
+                create_user(username, password, role=role, departments=[], permissions=perms)
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось создать пользователя в БД: {e}")
+                return
+
             # Close the input dialog first
             self.close()
             

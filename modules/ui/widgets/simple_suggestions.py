@@ -18,10 +18,11 @@ class SimpleSuggestionsPopup(QListWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Make popup non-activating so the editor keeps keyboard focus
-        # Do not make this a top-level window; keep it as a child widget so
-        # it does not steal keyboard focus on Windows. Keep it frameless.
+        # Use a top-level Popup window so positioning can be done in global coords
         try:
-            self.setWindowFlags(Qt.WindowType.Widget | Qt.WindowType.FramelessWindowHint)
+            # Use a tooltip-like top-level window so it does NOT take activation/focus
+            # (Qt.ToolTip windows are top-level and don't accept focus on Windows).
+            self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
         except Exception:
             pass
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -118,15 +119,40 @@ class SimpleSuggestionsPopup(QListWidget):
             self._pending_target = None
             self._pending_pos = None
 
-        # schedule actual show in next event loop turn to avoid interfering with current focus/key processing
+        # If the target or its window are not yet visible or pending_pos is None, schedule a slightly
+        # delayed show (120ms) so mapToGlobal and widget geometry become valid. This prevents the
+        # popup from briefly appearing at 0,0 when UI is still initializing (common during import).
         try:
-            QTimer.singleShot(0, self._perform_show)
+            need_delay = False
+            if self._pending_pos is None:
+                need_delay = True
+            else:
+                try:
+                    if not getattr(self._pending_target, 'isVisible', lambda: True)():
+                        need_delay = True
+                    elif getattr(self._pending_target, 'width', lambda: 1)() == 0:
+                        need_delay = True
+                    else:
+                        # also check top-level window
+                        wnd = self._pending_target.window()
+                        if wnd is not None and not getattr(wnd, 'isVisible', lambda: True)():
+                            need_delay = True
+                except Exception:
+                    need_delay = True
+
+            if need_delay:
+                QTimer.singleShot(120, self._perform_show)
+            else:
+                QTimer.singleShot(0, self._perform_show)
         except Exception:
-            # fallback: try immediate
+            # Fallback: immediate attempt
             try:
-                self._perform_show()
+                QTimer.singleShot(0, self._perform_show)
             except Exception:
-                pass
+                try:
+                    self._perform_show()
+                except Exception:
+                    pass
 
     def _perform_show(self):
         try:
@@ -156,33 +182,10 @@ class SimpleSuggestionsPopup(QListWidget):
                 # set width and position slightly below the widget
                 try:
                     self.setFixedWidth(max(200, target_widget.width()))
-                    # If this popup is a child of a parent widget, move expects
-                    # parent-local coordinates. Compute the top-left of the
-                    # target in the parent's coordinate space and center the
-                    # popup horizontally relative to the target. Use a bit
-                    # larger vertical gap so the popup doesn't touch the field.
-                    try:
-                        parent_for_coords = self.parentWidget() or self.window()
-                        if parent_for_coords is not None:
-                            # target top-left global -> parent-local
-                            tgt_top_global = target_widget.mapToGlobal(QPoint(0, 0))
-                            tgt_top_local = parent_for_coords.mapFromGlobal(tgt_top_global)
-                            v_offset = 10  # vertical gap in pixels
-                            # center horizontally relative to target_widget
-                            desired_x = int(tgt_top_local.x() + (target_widget.width() - self.width()) / 2)
-                            # clamp within parent bounds
-                            try:
-                                max_x = max(0, parent_for_coords.width() - self.width())
-                                desired_x = max(0, min(desired_x, max_x))
-                            except Exception:
-                                pass
-                            desired_y = int(tgt_top_local.y() + target_widget.height() + v_offset)
-                            self.move(desired_x, desired_y)
-                        else:
-                            self.move(gp.x(), gp.y() + 10)
-                    except Exception:
-                        # Fallback to global coords if conversion fails
-                        self.move(gp.x(), gp.y() + 10)
+                    # Use global coords for positioning to avoid incorrect parent-local mapping
+                    # Position using global coordinates (gp is global bottom-left of target)
+                    v_offset = 10
+                    self.move(gp.x(), gp.y() + v_offset)
                 except Exception:
                     try:
                         self.move(gp)

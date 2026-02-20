@@ -351,20 +351,25 @@ class DateRangeEdit(QWidget):
             pass
         return super().mousePressEvent(event)
 
-    def showPopup(self):
+    def showPopup(self, anchor_widget=None):
+        """
+        Show the range calendar popup. If `anchor_widget` is provided, the popup will
+        be anchored to that widget (positioned under it when possible). If not,
+        behavior falls back to anchoring to this DateRangeEdit instance.
+        """
         try:
             if self._popup and self._popup.isVisible():
                 return
-            # Create popup
-            self._popup = QFrame(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+
+            # Create a top-level popup so it can be positioned anywhere on screen
+            self._popup = QFrame(None, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
             self._popup.setStyleSheet("background-color: #2b2b2b; border: 1px solid #404040; border-radius: 8px;")
             v = QVBoxLayout(self._popup)
             v.setContentsMargins(8, 8, 8, 8)
             self._range_cal = RangeCalendarWidget(self._popup)
-            # initialize if we have a range
+
             try:
                 if self._start and self._end:
-                    # show currently selected range on calendar
                     self._range_cal.range_start = self._start
                     self._range_cal.range_end = self._end
                     try:
@@ -376,14 +381,60 @@ class DateRangeEdit(QWidget):
 
             v.addWidget(self._range_cal)
 
-            # connect
             try:
                 self._range_cal.range_selected.connect(self._on_range_selected)
             except Exception:
                 pass
 
-            pos = self.mapToGlobal(QPoint(0, self.height()))
-            self._popup.move(pos)
+            # Positioning: prefer anchor_widget if provided, else this widget
+            try:
+                anchor = anchor_widget if anchor_widget is not None else self
+                try:
+                    rect = anchor.rect()
+                    global_pt = anchor.mapToGlobal(rect.bottomLeft())
+                    x = global_pt.x()
+                    y = global_pt.y()
+                except Exception:
+                    gp = anchor.mapToGlobal(QPoint(0, anchor.height()))
+                    x = gp.x(); y = gp.y()
+
+                try:
+                    screen = anchor.screen() if hasattr(anchor, 'screen') else QApplication.primaryScreen()
+                    if screen is None:
+                        screen = QApplication.primaryScreen()
+                    geom = screen.availableGeometry()
+
+                    # ensure not off left/top
+                    if x < geom.left():
+                        x = geom.left()
+                    if y < geom.top():
+                        y = geom.top()
+
+                    # clamp right edge
+                    if x + self._popup.width() > geom.right():
+                        x = max(geom.left(), geom.right() - self._popup.width())
+
+                    # if it doesn't fit below, show above
+                    if y + self._popup.height() > geom.bottom():
+                        try:
+                            top_left = anchor.mapToGlobal(anchor.rect().topLeft())
+                            y = top_left.y() - self._popup.height()
+                        except Exception:
+                            y = max(geom.top(), geom.bottom() - self._popup.height())
+
+                        if y < geom.top():
+                            y = geom.top()
+                except Exception:
+                    pass
+
+                self._popup.move(QPoint(int(x), int(y)))
+            except Exception:
+                try:
+                    pos = self.mapToGlobal(QPoint(0, self.height()))
+                    self._popup.move(pos)
+                except Exception:
+                    pass
+
             self._popup.show()
         except Exception:
             pass
