@@ -13,7 +13,7 @@ from modules.ui.auth import LoginWindow
 from modules.ui.launcher import LauncherWindow
 from modules.core.utils import get_resource_path
 
-APP_VERSION = "1.2.9"
+APP_VERSION = "1.3.0"
 GITHUB_OWNER = "kiril4a"
 GITHUB_REPO = "gov_ut"
 

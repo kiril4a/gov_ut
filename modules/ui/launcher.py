@@ -188,7 +188,7 @@ class LauncherWindow(QMainWindow):
         bottom_layout = QHBoxLayout(bottom_frame)
         bottom_layout.setContentsMargins(15, 5, 15, 5)
 
-        version = QLabel("v 1.2.9")
+        version = QLabel("v 1.3.0")
         version.setStyleSheet("color: #888;")
         bottom_layout.addWidget(version)
 
