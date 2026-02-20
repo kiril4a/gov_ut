@@ -181,8 +181,8 @@ ROLE_DEFS = {
     # Governor has same effective rights as Admin per requirement
     'Governor': {'rank': 1, 'permissions': ['governor.access', 'admin.full'], 'departments': []},
     'Minister': {'rank': 2, 'permissions': [], 'departments': []},
-    # Head (Начальник) gets UT edit rights and belongs to UT by default
-    'Head': {'rank': 3, 'permissions': [], 'departments': ['УТ']},
+    # Head (Начальник)
+    'Head': {'rank': 3, 'permissions': [], 'departments': []},
     'Deputy': {'rank': 4, 'permissions': [], 'departments': []},
     'Employee': {'rank': 5, 'permissions': [], 'departments': []},
     # Special role for UT responsibilities
@@ -315,16 +315,20 @@ def can_manage_user(assigner_doc: dict | str, target_doc: dict | str) -> bool:
     if target_rank <= assigner_rank:
         return False
 
-    # Head special rule: can manage only users without department or all target departments are within assigner's departments
-    if 'Head' in assigner.get('roles', set()):
+    # Restricted roles (Minister, Head, Deputy) special rule:
+    # They can manage only users that share at least one department with them.
+    # Targets without departments are NOT manageable by these restricted assigners.
+    restricted_roles = {'Minister', 'Head', 'Deputy'}
+    assigner_roles = set(assigner.get('roles', []))
+    
+    if assigner_roles & restricted_roles:
         assigner_depts = set(assigner.get('departments', []))
         target_depts = set(target.get('departments', []))
-        # allow only if target has no department OR all target departments are within assigner's departments
+        
         if not target_depts:
-            return True
-        if target_depts.issubset(assigner_depts):
-            return True
-        return False
+            return False
+        if not (assigner_depts & target_depts):
+            return False
 
     # default: allow managing strictly juniors
     return True

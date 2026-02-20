@@ -188,7 +188,7 @@ class LauncherWindow(QMainWindow):
         bottom_layout = QHBoxLayout(bottom_frame)
         bottom_layout.setContentsMargins(15, 5, 15, 5)
 
-        version = QLabel("v 1.2.8")
+        version = QLabel("v 1.2.9")
         version.setStyleSheet("color: #888;")
         bottom_layout.addWidget(version)
 
@@ -260,7 +260,8 @@ class LauncherWindow(QMainWindow):
     def open_role_settings(self):
         try:
             from modules.ui.widgets.role_settings_dialog import RoleSettingsDialog
-            dlg = RoleSettingsDialog(parent=self, current_user=self.user_data)
+            # Передаем parent=None, чтобы диалог стал независимым окном
+            dlg = RoleSettingsDialog(parent=None, current_user=self.user_data)
             dlg.exec()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть Настройку ролей:\n{e}")
