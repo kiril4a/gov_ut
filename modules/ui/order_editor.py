@@ -1,622 +1,1070 @@
-# order_editor.py - Три вкладки: Поля, Пункты, Просмотр
-import sys
-import os
-import re
-import requests
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QPushButton, QFrame, QGridLayout,
-                             QLineEdit, QSpinBox, QComboBox, QDateEdit,
-                             QTextEdit, QScrollArea, QSizePolicy, QMessageBox,
-                             QApplication, QListWidget, QListWidgetItem, 
-                             QInputDialog, QFileDialog, QTabWidget, QSplitter,
-                             QGroupBox)
-from PyQt6.QtCore import Qt, QDate, pyqtSignal
-from PyQt6.QtGui import QIcon, QClipboard, QPixmap, QFont
-from modules.core.utils import get_resource_path
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QListWidget, QListWidgetItem, QMessageBox, QDialogButtonBox, QMenu, 
+    QWidget, QSizePolicy, QFrame, QScrollArea, QGroupBox
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QStringListModel, QPropertyAnimation, QEasingCurve
+from PyQt6.QtGui import QFont, QPalette, QColor, QIcon
+from PyQt6.QtWidgets import QCompleter
 
-# Функция для загрузки изображения на imgbb.com
-def upload_to_imgbb(image_path, api_key='6b7a6a3c7f5e8d9c4b3a2f1e0d9c8b7a'):
-    try:
-        url = "https://api.imgbb.com/1/upload"
-        with open(image_path, 'rb') as file:
-            payload = {'key': api_key}
-            files = {'image': file}
-            response = requests.post(url, payload, files=files)
-            if response.status_code == 200:
-                data = response.json()
-                return data['data']['url']
-            else:
-                return None
-    except Exception as e:
-        print(f"Ошибка загрузки: {e}")
-        return None
+from modules.core.firebase_service import get_usernames, get_user, list_users, can_assign_role, save_user_roles, resolve_user_permissions, DEPT_DEFAULT_PERMS, can_manage_user, can_assign_departments, create_user, delete_user
 
-# ==================== ШАБЛОНЫ ПОСТАНОВЛЕНИЙ ====================
-TEMPLATES = {
-    "health": {
-        "name": "🏥 Управление здравоохранения",
-        "title": "ПОСТАНОВЛЕНИЕ УПРАВЛЕНИЯ ЗДРАВООХРАНЕНИЯ № {number}",
-        "header_img": "[IMG size=\"1280x446\"]{header_url}[/IMG]",
-        "body": """[JUSTIFY][SIZE=5][FONT=book antiqua][B]Я, {position} Сан-Андреас, {full_name}, в соответствии с действующей Конституцией штата Сан-Андреаса, положением о медицинских проверках государственных организаций и другими нормативно-правовыми актами штата Сан-Андреас, постановляю:[/B][/FONT][/SIZE][/JUSTIFY]""",
-        "items": [
-            "Признать плановую медицинскую и санитарную проверку государственной организации [COLOR=rgb(184, 49, 47)][B]{organization}[/B][/COLOR], назначенную на [COLOR=rgb(184, 49, 47)][B]{weekday}[/B][/COLOR], [COLOR=rgb(184, 49, 47)][B]{date}[/B][/COLOR] в [COLOR=rgb(184, 49, 47)][B]{time}[/B][/COLOR] [COLOR=rgb(184, 49, 47)][B]{status}[/B][/COLOR];",
-            "По итогам плановой медицинской и санитарной проверки признать результаты медицинской проверки — [COLOR=rgb(184, 49, 47)][B]{med_result}[/B][/COLOR], а санитарной проверки — [COLOR=rgb(184, 49, 47)][B]{san_result}[/B][/COLOR];",
-            "Наложить на руководство [COLOR=rgb(184, 49, 47)][B]{organization}[/B][/COLOR] штраф в размере [COLOR=rgb(184, 49, 47)][B]{fine}[/B][/COLOR] согласно статье [COLOR=rgb(184, 49, 47)][B]{article}[/B][/COLOR] Положение о медицинских проверках государственных организаций;",
-            "Обязать руководство государственной организации [COLOR=rgb(184, 49, 47)][B]{organization}[/B][/COLOR] исправить нарушения санитарных норм в течение 24 часов с момента публикации настоящего постановления;",
-            "Обязать руководство государственной организации [COLOR=rgb(184, 49, 47)][B]{organization}[/B][/COLOR] оплатить штраф в течение 24 часов с момента публикации настоящего постановления;\n*Примечание: Штраф может быть оплачен Руководству Управления Здравоохранения, Губернатору, Вице-Губернатору.",
-            "Настоящее постановление вступает в силу с момента его публикации."
-        ],
-        "footer": """[RIGHT][FONT=book antiqua][COLOR=rgb(184, 49, 47)][SIZE=5][B]{sign_position}[/B][/SIZE][/COLOR][SIZE=5] штата Сан-Андреас[/SIZE]
-[COLOR=rgb(184, 49, 47)][SIZE=5][B]{sign_name}[/B][/SIZE][/COLOR]
-[COLOR=rgb(184, 49, 47)][SIZE=5][B]{signature}[/B][/SIZE][/COLOR]
 
-[SIZE=5]г. Лос-Сантос, штат Сан-Андреас[/SIZE]
-[COLOR=rgb(184, 49, 47)][SIZE=5][B]{sign_date}[/B][/SIZE][/COLOR][SIZE=5] года[/SIZE][/FONT][/RIGHT]""",
-        "fields": {
-            "position": "Начальник Управления Здравоохранения",
-            "full_name": "Lon LaVibe",
-            "organization": "Los Santos Sheriff Department",
-            "weekday": "понедельник",
-            "date": "09.02.2026",
-            "time": "19:30",
-            "status": "состоявшейся",
-            "med_result": "удовлетворительными",
-            "san_result": "удовлетворительными",
-            "fine": "25 000 $",
-            "article": "10.1",
-            "sign_position": "Начальник Управления Здравоохранения",
-            "sign_name": "Lon LaVibe",
-            "signature": "(подпись)",
-            "sign_date": "13 февраля 2026"
-        }
-    },
-    "prosecutor": {
-        "name": "⚖️ Прокуратура",
-        "title": "ПОСТАНОВЛЕНИЕ ПРОКУРАТУРЫ DJP-Nº {number}",
-        "header_img": "[IMG size=\"1280x446\"]{header_url}[/IMG]",
-        "body": "Руководствуясь своими полномочиями, а также опираясь на действующие законодательные акты, постановляю:",
-        "items": [
-            "Усмотреть в действиях сотрудника {org_department} [COLOR=rgb(184, 49, 47)][B]{org_name}[/B][/COLOR] [{org_id}] признаки состава преступления, предусмотренного статьями [COLOR=rgb(184, 49, 47)][B]{article}[/B][/COLOR] Уголовного Кодекса штата SA.",
-            "Привлечь сотрудника {org_department} [COLOR=rgb(184, 49, 47)][B]{org_name}[/B][/COLOR] [{org_id}] к уголовной ответственности, предусмотренной Уголовным Кодексом штата SA: [COLOR=rgb(184, 49, 47)][B]{punishment}[/B][/COLOR].",
-            "Руководству {org_department} расторгнуть трудовой договор с указанным лицом по факту привлечения к уголовной ответственности, заключенному между ними.",
-            "После исполнения третьего пункта настоящего постановления направить доказательства на электронную почту прокурора [COLOR=rgb(184, 49, 47)][B]{prosecutor_email}[/B][/COLOR].",
-            "Ответственность за исполнение настоящего постановления возложить на руководство {org_department} в лице Директора и его заместителей."
-        ],
-        "footer": """Комментарий: Для связи с сотрудником прокуратуры используйте почту: [COLOR=rgb(184, 49, 47)][B]{contact_email}[/B][/COLOR]
-
-Обращаю внимание на то, что игнорирование данного постановления, а как следствие его неисполнение, может повлечь за собой наказание в рамках Уголовного Кодекса Штата San Andreas и иных нормативно-правовых актов. Постановление вступает в силу с момента публикации и может быть обжаловано в установленном законом порядке.
-
-Срок на исполнение настоящего постановления установить равным 24 часам с момента публикации.
-
-[RIGHT]{sign_date} года
-г. Лос-Сантос, Штат Сан-Андреас
-{sign_position}
-{sign_name}
-{signature}[/RIGHT]""",
-        "fields": {
-            "org_department": "сотрудника FIB",
-            "org_name": "Macan Satoru",
-            "org_id": "175083",
-            "article": "12.7.1",
-            "punishment": "1 год лишения свободы в Федеральной Тюрьме Болингброук",
-            "prosecutor_email": "sasha_bezgin@ls.gov",
-            "contact_email": "sasha_bezgin@ls.gov",
-            "sign_position": "Младший прокурор",
-            "sign_name": "Alexs Fox",
-            "signature": "A.Fox",
-            "sign_date": "13 февраля 2026"
-        }
-    },
-    "gp_office": {
-        "name": "👑 Офис Генерального прокурора",
-        "title": "Постановление офиса Генерального прокурора штата ОАГ-№{number}:",
-        "header_img": "[IMG size=\"1280x446\"]{header_url}[/IMG]",
-        "body": "Руководствуясь своими полномочиями, а также опираясь на действующие законодательные акты, постановляю:",
-        "items": [
-            "На основании проведенного расследования аннулировать запись о судимости гражданина [COLOR=rgb(184, 49, 47)][B]{full_name}[/B][/COLOR] [{id}] полученную [COLOR=rgb(184, 49, 47)][B]{crime_date}[/B][/COLOR] в [COLOR=rgb(184, 49, 47)][B]{crime_time}[/B][/COLOR].",
-            "Обязать Главу Коллегии Адвокатов и его заместителей восстановить лицензию частного адвоката без взимания государственной пошлины и проведения экзамена, в случае обращения к ним со стороны гражданина [COLOR=rgb(184, 49, 47)][B]{full_name}[/B][/COLOR] [{id}].\nПримечание: В случае наличия активных судимостей Глава Коллегии Адвокатов и его заместители могут отказаться в восстановлении лицензии и уведомить об этом Генерального Прокурора."
-        ],
-        "footer": """**Комментарий:** Для связи с прокурором используйте почту: [COLOR=rgb(184, 49, 47)][B]{contact_email}[/B][/COLOR]
-
-*Обращаю внимание на то, что игнорирование данного постановления, а как следствие его неисполнение, может понести за собой наказание в рамках Уголовного Кодекса Штата San Andreas и иных нормативно-правовых актов. Постановление вступает в силу с момента публикации и может быть обжаловано в установленном законом порядке.*
-
-[RIGHT]{sign_date} года
-г. Лос-Сантос, Штат Сан-Андреас
-{sign_position}
-{sign_name}
-{signature}[/RIGHT]""",
-        "fields": {
-            "full_name": "Madkid BossPsewdyan",
-            "id": "182753",
-            "crime_date": "07.02.2026",
-            "crime_time": "19:08",
-            "contact_email": "depressed_dead",
-            "sign_position": "Генеральный Прокурор",
-            "sign_name": "Rimuru Arthas",
-            "signature": "R.Arthas",
-            "sign_date": "13 февраля 2026"
-        }
-    },
-    "governor": {
-        "name": "🏛️ Губернатор / Вице-губернатор",
-        "title": "ПОСТАНОВЛЕНИЕ ГУБЕРНАТОРА ШТАТА SAN ANDREAS № {number}",
-        "header_img": "[IMG size=\"1280x446\"]{header_url}[/IMG]",
-        "body": "Я, {position} штата Сан-Андреас, {full_name}, действуя в соответствии с Конституцией штата и наделенными полномочиями, постановляю:",
-        "items": [
-            "{item1}",
-            "{item2}",
-            "{item3}"
-        ],
-        "footer": """[RIGHT]{sign_date} года
-г. Лос-Сантос, Штат Сан-Андреас
-{sign_position}
-{sign_name}
-{signature}[/RIGHT]""",
-        "fields": {
-            "position": "Губернатор",
-            "full_name": "Имя Фамилия",
-            "item1": "Текст первого пункта",
-            "item2": "Текст второго пункта",
-            "item3": "Текст третьего пункта",
-            "sign_position": "Губернатор",
-            "sign_name": "Имя Фамилия",
-            "signature": "И.Ф.",
-            "sign_date": "13 февраля 2026"
-        }
-    },
-    "labor": {
-        "name": "🔨 Управление труда",
-        "title": "ПОСТАНОВЛЕНИЕ УПРАВЛЕНИЯ ТРУДА № {number}",
-        "header_img": "[IMG size=\"1280x446\"]{header_url}[/IMG]",
-        "body": "Я, {position} Управления Труда Сан-Андреас, {full_name}, в соответствии с Трудовым Кодексом штата, постановляю:",
-        "items": [
-            "{item1}",
-            "{item2}",
-            "{item3}"
-        ],
-        "footer": """[RIGHT]{sign_date} года
-г. Лос-Сантос, Штат Сан-Андреас
-{sign_position}
-{sign_name}
-{signature}[/RIGHT]""",
-        "fields": {
-            "position": "Начальник Управления Труда",
-            "full_name": "Имя Фамилия",
-            "item1": "Пункт первый",
-            "item2": "Пункт второй",
-            "item3": "Пункт третий",
-            "sign_position": "Начальник Управления Труда",
-            "sign_name": "Имя Фамилия",
-            "signature": "И.Ф.",
-            "sign_date": "13 февраля 2026"
-        }
-    }
-}
-
-class OrderEditorWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Редактор постановлений — GIH")
-        self.setWindowIcon(QIcon(get_resource_path("image.png")))
+class ModernSelectionPopup(QDialog):
+    """Современное всплывающее окно выбора с анимацией и улучшенным дизайном"""
+    
+    def __init__(self, parent=None, title="", items=None, preselected=None):
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         
-        self.setMinimumSize(1300, 850)
-        self.resize(1300, 850)
-
-        self.current_template = "health"
-        self.fields_widgets = {}
-        self.header_url = ""
-        self.items_list = None
-
-        self.setStyleSheet("""
-            QMainWindow { background-color: #121212; }
-            QLabel { color: white; font-size: 14px; }
-            QFrame { border-radius: 12px; background-color: #1e1e1e; border: 1px solid #333; }
-            QGroupBox {
+        # Настройки окна
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        
+        # Основной контейнер с тенью
+        main_widget = QWidget(self)
+        main_widget.setObjectName("popupContainer")
+        main_widget.setStyleSheet("""
+            QWidget#popupContainer {
+                background-color: #2d2d2d;
+                border: 1px solid #404040;
+                border-radius: 24px; /* Увеличенный радиус с 16px до 24px */
+            }
+        """)
+        
+        layout = QVBoxLayout(main_widget)
+        layout.setContentsMargins(25, 25, 25, 25)  # Увеличенные отступы с 20px до 25px
+        layout.setSpacing(18)  # Увеличенный интервал с 15px до 18px
+        
+        # Заголовок
+        title_label = QLabel(title)
+        title_label.setStyleSheet("""
+            QLabel {
+                color: #e0e0e0;
+                font-size: 18px; /* Увеличен с 16px до 18px */
+                font-weight: 600;
+                padding: 12px 16px; /* Увеличены отступы */
+                background-color: #363636;
+                border-radius: 14px; /* Увеличен радиус */
+                border-left: 6px solid #2a82da; /* Утолщена левая граница */
+            }
+        """)
+        layout.addWidget(title_label)
+        
+        # Список элементов
+        self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                background-color: #363636;
+                border: 1px solid #404040;
+                border-radius: 18px; /* Увеличен радиус с 12px до 18px */
+                padding: 12px; /* Увеличены отступы */
+                outline: none;
+            }
+            QListWidget::item {
+                background-color: #404040;
+                color: #ffffff;
+                padding: 14px 20px; /* Увеличены отступы внутри элементов */
+                margin: 6px 0px; /* Увеличены отступы между элементами */
+                border-radius: 12px; /* Увеличен радиус элементов */
+                font-weight: 500;
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QListWidget::item:hover {
+                background-color: #4a4a4a;
+                border-left: 4px solid #2a82da; /* Утолщена левая граница при наведении */
+                padding-left: 24px; /* Дополнительный отступ при наведении */
+            }
+            QListWidget::item:selected {
+                background-color: #2a82da;
                 color: white;
-                font-size: 16px;
-                font-weight: bold;
-                border: 2px solid #333;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-                color: #4facfe;
+        """)
+        
+        for item_text in (items or []):
+            item = QListWidgetItem(item_text)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            if preselected and item_text in preselected:
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+            self.list_widget.addItem(item)
+        
+        layout.addWidget(self.list_widget)
+        
+        # Кнопки
+        buttons_layout = QHBoxLayout()
+        buttons_layout.setSpacing(15)  # Увеличен интервал между кнопками
+        
+        cancel_btn = QPushButton("Отмена")
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #404040;
+                color: #e0e0e0;
+                border: 1px solid #505050;
+                border-radius: 14px; /* Увеличен радиус с 10px до 14px */
+                padding: 12px 28px; /* Увеличены отступы */
+                font-weight: 600;
+                font-size: 15px; /* Увеличен шрифт */
             }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+                border-color: #606060;
+            }
+        """)
+        cancel_btn.clicked.connect(self.reject)
+        
+        ok_btn = QPushButton("Применить")
+        ok_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2a82da;
                 color: white;
                 border: none;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 14px;
-                padding: 8px 15px;
+                border-radius: 14px; /* Увеличен радиус с 10px до 14px */
+                padding: 12px 28px; /* Увеличены отступы */
+                font-weight: 600;
+                font-size: 15px; /* Увеличен шрифт */
             }
-            QPushButton:hover { background-color: #3a92ea; }
-            QPushButton:pressed { background-color: #1a72ca; }
-            QPushButton:disabled { background-color: #3d3d3d; color: #888; }
-            QLineEdit, QSpinBox, QComboBox, QDateEdit, QTextEdit, QListWidget {
-                background-color: #2d2d2d;
-                color: white;
-                border: 1px solid #3d3d3d;
-                border-radius: 6px;
-                padding: 8px;
-                font-size: 14px;
+            QPushButton:hover {
+                background-color: #3a92ea;
             }
-            QListWidget::item { padding: 8px; }
-            QListWidget::item:selected { background-color: #2a82da; }
-            QTabWidget::pane { border: 1px solid #333; background-color: #1e1e1e; border-radius: 8px; }
-            QTabBar::tab { 
-                background-color: #2d2d2d; 
-                color: white; 
-                padding: 12px 30px; 
-                margin-right: 2px; 
-                font-size: 15px;
-                font-weight: bold;
-            }
-            QTabBar::tab:selected { background-color: #2a82da; }
-            QTabBar::tab:hover { background-color: #3d3d3d; }
-            QScrollArea { border: none; background-color: transparent; }
         """)
-
-        self.init_ui()
-        self.load_template()
-
-    def init_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
-
-        # ===== ВЕРХНЯЯ ПАНЕЛЬ С ВЫБОРОМ ШАБЛОНА =====
-        top_frame = QFrame()
-        top_frame.setFixedHeight(70)
-        top_layout = QHBoxLayout(top_frame)
-        top_layout.setContentsMargins(15, 10, 15, 10)
-
-        top_layout.addWidget(QLabel("Выберите ведомство:"))
-
-        self.template_combo = QComboBox()
-        for key, tmpl in TEMPLATES.items():
-            self.template_combo.addItem(tmpl["name"], key)
-        self.template_combo.currentIndexChanged.connect(self.on_template_changed)
-        self.template_combo.setMinimumWidth(250)
-        top_layout.addWidget(self.template_combo)
-
-        top_layout.addStretch()
-
-        self.number_spin = QSpinBox()
-        self.number_spin.setRange(1, 9999)
-        self.number_spin.setValue(928)
-        self.number_spin.setPrefix("№ ")
-        self.number_spin.valueChanged.connect(self.generate)
-        top_layout.addWidget(QLabel("Номер:"))
-        top_layout.addWidget(self.number_spin)
-
-        main_layout.addWidget(top_frame)
-
-        # ===== ПАНЕЛЬ ЗАГРУЗКИ ШАПКИ =====
-        header_frame = QFrame()
-        header_frame.setFixedHeight(60)
-        header_layout = QHBoxLayout(header_frame)
-        header_layout.setContentsMargins(15, 5, 15, 5)
-
-        header_layout.addWidget(QLabel("Шапка постановления:"))
-
-        self.header_url_edit = QLineEdit()
-        self.header_url_edit.setPlaceholderText("Ссылка на изображение или загрузите файл...")
-        self.header_url_edit.textChanged.connect(self.update_header_url)
-        header_layout.addWidget(self.header_url_edit)
-
-        self.upload_btn = QPushButton("📁 Загрузить")
-        self.upload_btn.clicked.connect(self.upload_image)
-        header_layout.addWidget(self.upload_btn)
-
-        self.clear_header_btn = QPushButton("❌ Очистить")
-        self.clear_header_btn.clicked.connect(self.clear_header)
-        header_layout.addWidget(self.clear_header_btn)
-
-        main_layout.addWidget(header_frame)
-
-        # ===== ОСНОВНЫЕ ВКЛАДКИ =====
-        self.main_tabs = QTabWidget()
+        ok_btn.clicked.connect(self.accept)
         
-        # Вкладка 1: Поля для заполнения
-        self.create_fields_tab()
+        buttons_layout.addStretch()
+        buttons_layout.addWidget(cancel_btn)
+        buttons_layout.addWidget(ok_btn)
         
-        # Вкладка 2: Пункты постановления
-        self.create_items_tab()
+        layout.addLayout(buttons_layout)
         
-        # Вкладка 3: Просмотр результата
-        self.create_preview_tab()
+        # Устанавливаем размер окна
+        self.resize(450, 500)  # Увеличен размер с 400x450 до 450x500
         
-        main_layout.addWidget(self.main_tabs)
+        # Основной layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(main_widget)
+    
+    def selected(self):
+        return [self.list_widget.item(i).text() for i in range(self.list_widget.count()) 
+                if self.list_widget.item(i).checkState() == Qt.CheckState.Checked]
 
-        # ===== НИЖНЯЯ ПАНЕЛЬ =====
-        bottom_frame = QFrame()
-        bottom_frame.setFixedHeight(50)
-        bottom_layout = QHBoxLayout(bottom_frame)
-        bottom_layout.setContentsMargins(15, 5, 15, 5)
 
-        self.info_label = QLabel("⚡ Готов к работе")
-        self.info_label.setStyleSheet("color: #888;")
-        bottom_layout.addWidget(self.info_label)
-
-        bottom_layout.addStretch()
-
-        self.copy_btn = QPushButton("📋 Копировать BBCode")
-        self.copy_btn.clicked.connect(self.copy_to_clipboard)
-        self.copy_btn.setMinimumHeight(35)
-        bottom_layout.addWidget(self.copy_btn)
-
-        main_layout.addWidget(bottom_frame)
-
-    def create_fields_tab(self):
-        """Вкладка с полями для заполнения"""
-        fields_tab = QWidget()
-        fields_layout = QVBoxLayout(fields_tab)
-        fields_layout.setContentsMargins(15, 15, 15, 15)
-
-        # Область с прокруткой для полей
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-
-        fields_container = QWidget()
-        self.fields_layout = QVBoxLayout(fields_container)
-        self.fields_layout.setSpacing(10)
-        self.fields_layout.setContentsMargins(5, 5, 5, 5)
-
-        scroll.setWidget(fields_container)
-        fields_layout.addWidget(scroll)
-
-        self.main_tabs.addTab(fields_tab, "📝 Поля для заполнения")
-
-    def create_items_tab(self):
-        """Вкладка с пунктами постановления"""
-        items_tab = QWidget()
-        items_layout = QVBoxLayout(items_tab)
-        items_layout.setContentsMargins(15, 15, 15, 15)
-        items_layout.setSpacing(15)
-
-        # Кнопки управления пунктами
-        btn_layout = QHBoxLayout()
+class RoleSettingsDialog(QDialog):
+    def __init__(self, parent=None, current_user=None):
+        self.current_user = current_user if current_user is not None else getattr(parent, 'user_data', None)
+        super().__init__(parent)
         
-        self.add_item_btn = QPushButton("➕ Добавить пункт")
-        self.add_item_btn.clicked.connect(self.add_list_item)
-        btn_layout.addWidget(self.add_item_btn)
-
-        self.remove_item_btn = QPushButton("➖ Удалить пункт")
-        self.remove_item_btn.clicked.connect(self.remove_list_item)
-        btn_layout.addWidget(self.remove_item_btn)
-
-        items_layout.addLayout(btn_layout)
-
-        # Список пунктов
-        self.items_list = QListWidget()
-        self.items_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        self.items_list.itemChanged.connect(self.generate)
-        items_layout.addWidget(self.items_list)
-
-        self.main_tabs.addTab(items_tab, "📋 Пункты постановления")
-
-    def create_preview_tab(self):
-        """Вкладка с предпросмотром"""
-        preview_tab = QWidget()
-        preview_layout = QVBoxLayout(preview_tab)
-        preview_layout.setContentsMargins(15, 15, 15, 15)
-
-        # Вкладки для разных форматов просмотра
-        self.preview_tabs = QTabWidget()
-
-        # BBCode
-        bbcode_tab = QWidget()
-        bbcode_layout = QVBoxLayout(bbcode_tab)
-        self.bbcode_text = QTextEdit()
-        self.bbcode_text.setReadOnly(True)
-        self.bbcode_text.setFontFamily("Courier New")
-        self.bbcode_text.setFontPointSize(12)
-        bbcode_layout.addWidget(self.bbcode_text)
-        self.preview_tabs.addTab(bbcode_tab, "📟 BBCode")
-
-        # Обычный текст
-        text_tab = QWidget()
-        text_layout = QVBoxLayout(text_tab)
-        self.plain_text = QTextEdit()
-        self.plain_text.setReadOnly(True)
-        self.plain_text.setFontFamily("Arial")
-        self.plain_text.setFontPointSize(12)
-        text_layout.addWidget(self.plain_text)
-        self.preview_tabs.addTab(text_tab, "📄 Обычный текст")
-
-        preview_layout.addWidget(self.preview_tabs)
-
-        # Кнопка обновления
-        update_btn = QPushButton("🔄 Обновить предпросмотр")
-        update_btn.clicked.connect(self.generate)
-        update_btn.setMinimumHeight(40)
-        preview_layout.addWidget(update_btn)
-
-        self.main_tabs.addTab(preview_tab, "👁️ Просмотр")
-
-    def update_header_url(self, text):
-        self.header_url = text
-        self.generate()
-
-    def upload_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, 
-            "Выберите изображение для шапки", 
-            "", 
-            "Изображения (*.png *.jpg *.jpeg *.gif *.bmp)"
-        )
+        # Настройки окна
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.setWindowTitle("Настройка ролей пользователя")
+        self.setModal(True)
+        self.resize(700, 600)  # Увеличен размер с 650x550 до 700x600
         
-        if not file_path:
-            return
-
-        self.info_label.setText("⏫ Загрузка изображения...")
+        # Основной контейнер
+        main_widget = QWidget(self)
+        main_widget.setObjectName("mainContainer")
         
-        url = upload_to_imgbb(file_path)
+        # Анимация появления
+        self.animation = QPropertyAnimation(self, b"windowOpacity")
+        self.animation.setDuration(200)
+        self.animation.setStartValue(0)
+        self.animation.setEndValue(1)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.animation.start()
         
-        if url:
-            self.header_url_edit.setText(url)
-            self.info_label.setText("✅ Изображение загружено!")
-            QMessageBox.information(self, "Успех", "Изображение успешно загружено и ссылка добавлена.")
-        else:
-            self.info_label.setText("❌ Ошибка загрузки")
-            QMessageBox.warning(self, "Ошибка", "Не удалось загрузить изображение. Попробуйте вставить ссылку вручную.")
-
-    def clear_header(self):
-        self.header_url_edit.clear()
-        self.header_url = ""
-
-    def on_template_changed(self):
-        self.current_template = self.template_combo.currentData()
-        self.load_template()
-
-    def load_template(self):
-        tmpl = TEMPLATES[self.current_template]
-
-        # Очищаем старые поля
-        self.clear_layout(self.fields_layout)
-        self.fields_widgets.clear()
+        # Основной layout
+        layout = QVBoxLayout(main_widget)
+        layout.setContentsMargins(30, 30, 30, 30)  # Увеличены отступы с 25px до 30px
+        layout.setSpacing(22)  # Увеличен интервал с 20px до 22px
         
-        if self.items_list:
-            self.items_list.clear()
-
-        # Создаем поля для текущего шаблона
-        for key, default_value in tmpl["fields"].items():
-            field_frame = QFrame()
-            field_frame.setStyleSheet("QFrame { background-color: #2a2a2a; border-radius: 6px; padding: 5px; }")
-            field_layout = QHBoxLayout(field_frame)
-            field_layout.setContentsMargins(5, 2, 5, 2)
-
-            label = QLabel(f"{key}:")
-            label.setFixedWidth(120)
-            field_layout.addWidget(label)
-
-            edit = QLineEdit(default_value)
-            edit.textChanged.connect(self.generate)
-            field_layout.addWidget(edit)
-
-            self.fields_layout.addWidget(field_frame)
-            self.fields_widgets[key] = edit
-
-        # Загружаем пункты для текущего шаблона
-        for item_text in tmpl["items"]:
-            self.items_list.addItem(item_text)
-
-        self.fields_layout.addStretch()
-        self.generate()
-
-    def add_list_item(self):
-        new_item, ok = QInputDialog.getText(self, "Новый пункт", "Введите текст пункта:")
-        if ok and new_item:
-            self.items_list.addItem(new_item)
-            self.generate()
-
-    def remove_list_item(self):
-        current_row = self.items_list.currentRow()
-        if current_row >= 0:
-            self.items_list.takeItem(current_row)
-            self.generate()
-
-    def strip_bbcode(self, text):
-        """Удаляет BBCode теги из текста"""
-        text = re.sub(r'\[\*\]', '• ', text)
-        text = re.sub(r'\[/?[A-Za-z0-9_=\"]*\]', '', text)
-        text = re.sub(r'\[COLOR=[^\]]*\]|\[/COLOR\]', '', text)
-        text = re.sub(r'\[SIZE=[^\]]*\]|\[/SIZE\]', '', text)
-        text = re.sub(r'\[FONT=[^\]]*\]|\[/FONT\]', '', text)
-        text = re.sub(r'\[B\]|\[/B\]', '', text)
-        text = re.sub(r'\[I\]|\[/I\]', '', text)
-        text = re.sub(r'\[U\]|\[/U\]', '', text)
-        text = re.sub(r'\[JUSTIFY\]|\[/JUSTIFY\]', '', text)
-        text = re.sub(r'\[CENTER\]|\[/CENTER\]', '', text)
-        text = re.sub(r'\[RIGHT\]|\[/RIGHT\]', '', text)
-        text = re.sub(r'\[LIST=1\]|\[/LIST\]', '', text)
-        text = re.sub(r'\[IMG[^\]]*\]|\[/IMG\]', '', text)
-        return text
-
-    def generate(self):
+        # Заголовок с кнопкой закрытия
+        title_layout = QHBoxLayout()
+        
+        title_label = QLabel("⚙️ Настройка ролей пользователя")
+        title_label.setStyleSheet("""
+            QLabel {
+                color: white;
+                font-size: 24px; /* Увеличен с 20px до 24px */
+                font-weight: 700;
+                padding: 10px 0;
+            }
+        """)
+        title_layout.addWidget(title_label)
+        
+        title_layout.addStretch()
+        
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(36, 36)  # Увеличен размер кнопки
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #404040;
+                color: #e0e0e0;
+                border: none;
+                border-radius: 18px; /* Увеличен радиус */
+                font-size: 18px; /* Увеличен шрифт */
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #d63031;
+                color: white;
+            }
+        """)
+        close_btn.clicked.connect(self.reject)
+        title_layout.addWidget(close_btn)
+        
+        layout.addLayout(title_layout)
+        
+        # Разделитель
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet("background-color: #404040; max-height: 2px;")  # Утолщена линия
+        layout.addWidget(separator)
+        
+        # Панель выбора режима
+        mode_panel = QFrame()
+        mode_panel.setStyleSheet("""
+            QFrame {
+                background-color: #363636;
+                border-radius: 16px; /* Увеличен радиус с 12px до 16px */
+                padding: 8px;
+            }
+        """)
+        mode_layout = QHBoxLayout(mode_panel)
+        mode_layout.setContentsMargins(15, 8, 15, 8)  # Увеличены отступы
+        
+        # Кнопки режимов
+        self.mode_roles_btn = QPushButton("📋 Настройка ролей")
+        self.mode_roles_btn.setCheckable(True)
+        self.mode_roles_btn.setChecked(True)
+        self.mode_roles_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        self.mode_add_btn = QPushButton("➕ Добавить пользователя")
+        self.mode_add_btn.setCheckable(True)
+        self.mode_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        self.mode_delete_btn = QPushButton("🗑️ Удалить пользователя")
+        self.mode_delete_btn.setCheckable(True)
+        self.mode_delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        # Проверка прав
         try:
-            tmpl = TEMPLATES[self.current_template]
-            number = self.number_spin.value()
-
-            values = {key: w.text() for key, w in self.fields_widgets.items()}
-            values["number"] = number
-            values["header_url"] = self.header_url if self.header_url else ""
-
-            items_text = []
-            for i in range(self.items_list.count()):
-                item_text = self.items_list.item(i).text()
+            res = resolve_user_permissions(self.current_user) if self.current_user else {}
+            roles = set(res.get('roles', []))
+            is_global = bool(roles & {'Admin', 'Governor'}) or ('admin.full' in res.get('permissions', set()))
+        except Exception:
+            is_global = False
+        
+        self.mode_add_btn.setVisible(is_global)
+        self.mode_delete_btn.setVisible(is_global)
+        
+        # Стиль для кнопок режимов
+        mode_button_style = """
+            QPushButton {
+                background-color: transparent;
+                color: #a0a0a0;
+                border: none;
+                border-radius: 12px; /* Увеличен радиус с 8px до 12px */
+                padding: 12px 24px; /* Увеличены отступы */
+                font-weight: 600;
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QPushButton:hover {
+                background-color: #404040;
+                color: #e0e0e0;
+            }
+            QPushButton:checked {
+                background-color: #2a82da;
+                color: white;
+            }
+        """
+        
+        self.mode_roles_btn.setStyleSheet(mode_button_style)
+        self.mode_add_btn.setStyleSheet(mode_button_style)
+        self.mode_delete_btn.setStyleSheet(mode_button_style)
+        
+        self.mode_roles_btn.clicked.connect(lambda: self.set_mode('roles'))
+        self.mode_add_btn.clicked.connect(lambda: self.set_mode('add'))
+        self.mode_delete_btn.clicked.connect(lambda: self.set_mode('delete'))
+        
+        mode_layout.addWidget(self.mode_roles_btn)
+        mode_layout.addWidget(self.mode_add_btn)
+        mode_layout.addWidget(self.mode_delete_btn)
+        mode_layout.addStretch()
+        
+        layout.addWidget(mode_panel)
+        
+        # Контентная область
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(18)  # Увеличен интервал
+        
+        # Панель ввода для режима ролей
+        self.roles_input_widget = QWidget()
+        roles_input_layout = QHBoxLayout(self.roles_input_widget)
+        roles_input_layout.setContentsMargins(0, 0, 0, 0)
+        roles_input_layout.setSpacing(15)  # Добавлен интервал между элементами
+        
+        username_label = QLabel("👤 Логин пользователя:")
+        username_label.setStyleSheet("""
+            QLabel {
+                color: #e0e0e0;
+                font-weight: 600;
+                padding: 12px 20px; /* Увеличены отступы */
+                background-color: #363636;
+                border-radius: 14px; /* Увеличен радиус */
+                min-width: 160px; /* Увеличена минимальная ширина */
+                font-size: 15px; /* Увеличен шрифт */
+            }
+        """)
+        roles_input_layout.addWidget(username_label)
+        
+        self.input_username = QLineEdit()
+        self.input_username.setPlaceholderText("Введите логин для поиска...")
+        self.input_username.setStyleSheet("""
+            QLineEdit {
+                background-color: #363636;
+                color: white;
+                border: 2px solid #404040;
+                border-radius: 14px; /* Увеличен радиус с 10px до 14px */
+                padding: 12px 20px; /* Увеличены отступы */
+                font-size: 15px; /* Увеличен шрифт */
+                font-weight: 500;
+                min-width: 280px; /* Увеличена минимальная ширина */
+            }
+            QLineEdit:focus {
+                border-color: #2a82da;
+            }
+        """)
+        
+        # Комплектор
+        self.completer_model = QStringListModel(self)
+        self.completer = QCompleter(self.completer_model, self)
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.input_username.setCompleter(self.completer)
+        
+        roles_input_layout.addWidget(self.input_username)
+        roles_input_layout.addStretch()
+        
+        content_layout.addWidget(self.roles_input_widget)
+        
+        # Панели для добавления/удаления
+        self.add_panel = self.create_add_panel()
+        self.delete_panel = self.create_delete_panel()
+        
+        content_layout.addWidget(self.add_panel)
+        content_layout.addWidget(self.delete_panel)
+        
+        # Информационная панель
+        self.info_group = QGroupBox("Информация о пользователе")
+        self.info_group.setStyleSheet("""
+            QGroupBox {
+                color: #e0e0e0;
+                font-weight: 600;
+                font-size: 16px; /* Увеличен шрифт */
+                border: 2px solid #404040;
+                border-radius: 16px; /* Увеличен радиус */
+                margin-top: 18px; /* Увеличен отступ */
+                padding-top: 18px; /* Увеличен отступ */
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 18px; /* Увеличен отступ */
+                padding: 0 12px 0 12px; /* Увеличены отступы */
+                background-color: #2d2d2d;
+            }
+        """)
+        info_layout = QVBoxLayout(self.info_group)
+        info_layout.setContentsMargins(18, 18, 18, 18)  # Увеличены отступы
+        
+        self.info_label = QLabel("")
+        self.info_label.setStyleSheet("""
+            QLabel {
+                color: #b0b0b0;
+                background-color: #363636;
+                border-radius: 14px; /* Увеличен радиус */
+                padding: 18px; /* Увеличены отступы */
+                font-size: 14px; /* Увеличен шрифт */
+                line-height: 1.8; /* Увеличена высота строки */
+            }
+        """)
+        self.info_label.setWordWrap(True)
+        info_layout.addWidget(self.info_label)
+        
+        content_layout.addWidget(self.info_group)
+        
+        # Панель действий
+        actions_widget = QWidget()
+        actions_layout = QHBoxLayout(actions_widget)
+        actions_layout.setContentsMargins(0, 15, 0, 0)  # Увеличен отступ сверху
+        actions_layout.setSpacing(15)  # Увеличен интервал между кнопками
+        
+        # Кнопки выбора
+        self.btn_roles = self.create_action_button("🎭 Выбрать роли", "#2a82da")
+        self.btn_depts = self.create_action_button("🏢 Выбрать отделы", "#27ae60")
+        self.btn_perms = self.create_action_button("🔑 Выбрать разрешения", "#e67e22")
+        
+        self.btn_roles.clicked.connect(self.open_roles_popup)
+        self.btn_depts.clicked.connect(self.open_depts_popup)
+        self.btn_perms.clicked.connect(self.open_perms_popup)
+        
+        actions_layout.addWidget(self.btn_roles)
+        actions_layout.addWidget(self.btn_depts)
+        actions_layout.addWidget(self.btn_perms)
+        actions_layout.addStretch()
+        
+        content_layout.addWidget(actions_widget)
+        
+        # Кнопки сохранения/отмены
+        buttons_widget = QWidget()
+        buttons_layout = QHBoxLayout(buttons_widget)
+        buttons_layout.setContentsMargins(0, 15, 0, 0)  # Увеличен отступ сверху
+        
+        self.btn_save = QPushButton("💾 Сохранить изменения")
+        self.btn_save.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                border-radius: 14px; /* Увеличен радиус */
+                padding: 14px 35px; /* Увеличены отступы */
+                font-weight: 700;
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QPushButton:hover {
+                background-color: #2ecc71;
+            }
+        """)
+        self.btn_save.clicked.connect(self.on_save)
+        
+        self.btn_cancel = QPushButton("✕ Отмена")
+        self.btn_cancel.setStyleSheet("""
+            QPushButton {
+                background-color: #404040;
+                color: #e0e0e0;
+                border: none;
+                border-radius: 14px; /* Увеличен радиус */
+                padding: 14px 35px; /* Увеличены отступы */
+                font-weight: 700;
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QPushButton:hover {
+                background-color: #d63031;
+            }
+        """)
+        self.btn_cancel.clicked.connect(self.reject)
+        
+        buttons_layout.addStretch()
+        buttons_layout.addWidget(self.btn_save)
+        buttons_layout.addWidget(self.btn_cancel)
+        
+        content_layout.addWidget(buttons_widget)
+        content_layout.addStretch()
+        
+        layout.addWidget(content_widget)
+        
+        # Устанавливаем основной стиль
+        main_widget.setStyleSheet("""
+            QWidget#mainContainer {
+                background-color: #2d2d2d;
+                border: 1px solid #404040;
+                border-radius: 24px; /* Увеличен радиус с 20px до 24px */
+            }
+        """)
+        
+        # Основной layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(main_widget)
+        
+        # Внутренние переменные
+        self.role_hierarchy = [
+            'Администратор',
+            'Губернатор',
+            'Министр',
+            'Начальник',
+            'Заместитель',
+            'Подчиненный',
+            'Посетитель'
+        ]
+        
+        self.role_to_depts = {
+            'Администратор': ['УТ', 'ЭУ', 'УК'],
+            'Губернатор': ['УТ', 'ЭУ', 'УК'],
+            'Министр': ['ЭУ', 'УК'],
+            'Начальник': ['УТ', 'ЭУ', 'УК'],
+            'Заместитель': ['УТ', 'ЭУ', 'УК'],
+            'Подчиненный': ['УТ', 'ЭУ', 'УК'],
+        }
+        
+        self.label_to_key = {
+            'Администратор': 'Admin',
+            'Губернатор': 'Governor',
+            'Министр': 'Minister',
+            'Начальник': 'Head',
+            'Заместитель': 'Deputy',
+            'Подчиненный': 'Employee',
+            'Посетитель': 'Visitor',
+        }
+        
+        # Состояние
+        self.mode = 'roles'
+        self.loaded_user = None
+        self.selected_roles = []
+        self.selected_depts = []
+        self.selected_perms = []
+        self._all_user_docs = None
+        
+        # Подключение сигналов
+        self.input_username.textChanged.connect(self.on_username_typed)
+        
+        try:
+            self.completer.activated.connect(self.on_username_selected)
+        except Exception:
+            pass
+        
+        # Инициализация видимости
+        self.set_mode('roles')
+    
+    def create_add_panel(self):
+        panel = QWidget()
+        panel.setStyleSheet("""
+            QWidget {
+                background-color: #363636;
+                border-radius: 16px; /* Увеличен радиус */
+                padding: 18px; /* Увеличены отступы */
+            }
+        """)
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(18, 18, 18, 18)  # Увеличены отступы
+        layout.setSpacing(15)  # Увеличен интервал
+        
+        icon_label = QLabel("➕")
+        icon_label.setStyleSheet("font-size: 28px; background: none;")  # Увеличен размер иконки
+        layout.addWidget(icon_label)
+        
+        self.add_login = QLineEdit()
+        self.add_login.setPlaceholderText("Логин нового пользователя")
+        self.add_login.setStyleSheet("""
+            QLineEdit {
+                background-color: #404040;
+                color: white;
+                border: 1px solid #505050;
+                border-radius: 12px; /* Увеличен радиус */
+                padding: 12px 16px; /* Увеличены отступы */
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QLineEdit:focus {
+                border-color: #2a82da;
+            }
+        """)
+        layout.addWidget(self.add_login)
+        
+        self.add_password = QLineEdit()
+        self.add_password.setPlaceholderText("Пароль")
+        self.add_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.add_password.setStyleSheet("""
+            QLineEdit {
+                background-color: #404040;
+                color: white;
+                border: 1px solid #505050;
+                border-radius: 12px; /* Увеличен радиус */
+                padding: 12px 16px; /* Увеличены отступы */
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QLineEdit:focus {
+                border-color: #2a82da;
+            }
+        """)
+        layout.addWidget(self.add_password)
+        
+        self.add_create_btn = QPushButton("Создать")
+        self.add_create_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                border-radius: 12px; /* Увеличен радиус */
+                padding: 12px 25px; /* Увеличены отступы */
+                font-weight: 600;
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QPushButton:hover {
+                background-color: #2ecc71;
+            }
+        """)
+        self.add_create_btn.clicked.connect(self._on_create_user)
+        layout.addWidget(self.add_create_btn)
+        
+        return panel
+    
+    def create_delete_panel(self):
+        panel = QWidget()
+        panel.setStyleSheet("""
+            QWidget {
+                background-color: #363636;
+                border-radius: 16px; /* Увеличен радиус */
+                padding: 18px; /* Увеличены отступы */
+            }
+        """)
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(18, 18, 18, 18)  # Увеличены отступы
+        layout.setSpacing(15)  # Увеличен интервал
+        
+        icon_label = QLabel("🗑️")
+        icon_label.setStyleSheet("font-size: 28px; background: none;")  # Увеличен размер иконки
+        layout.addWidget(icon_label)
+        
+        self.del_login = QLineEdit()
+        self.del_login.setPlaceholderText("Логин пользователя для удаления")
+        self.del_login.setStyleSheet("""
+            QLineEdit {
+                background-color: #404040;
+                color: white;
+                border: 1px solid #505050;
+                border-radius: 12px; /* Увеличен радиус */
+                padding: 12px 16px; /* Увеличены отступы */
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QLineEdit:focus {
+                border-color: #2a82da;
+            }
+        """)
+        layout.addWidget(self.del_login)
+        
+        self.del_delete_btn = QPushButton("Удалить")
+        self.del_delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #d63031;
+                color: white;
+                border: none;
+                border-radius: 12px; /* Увеличен радиус */
+                padding: 12px 25px; /* Увеличены отступы */
+                font-weight: 600;
+                font-size: 15px; /* Увеличен шрифт */
+            }
+            QPushButton:hover {
+                background-color: #ff6b6b;
+            }
+        """)
+        self.del_delete_btn.clicked.connect(self._on_delete_user)
+        layout.addWidget(self.del_delete_btn)
+        
+        return panel
+    
+    def create_action_button(self, text, color):
+        btn = QPushButton(text)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color};
+                color: white;
+                border: none;
+                border-radius: 12px; /* Увеличен радиус с 8px до 12px */
+                padding: 12px 20px; /* Увеличены отступы */
+                font-weight: 600;
+                font-size: 14px; /* Увеличен шрифт */
+            }}
+            QPushButton:hover {{
+                background-color: {self.lighten_color(color)};
+            }}
+            QPushButton:disabled {{
+                background-color: #404040;
+                color: #888;
+            }}
+        """)
+        return btn
+    
+    def lighten_color(self, color):
+        # Простое осветление цвета для hover эффекта
+        colors = {
+            "#2a82da": "#3a92ea",
+            "#27ae60": "#2ecc71",
+            "#e67e22": "#f39c12",
+        }
+        return colors.get(color, color)
+    
+    def set_mode(self, mode):
+        self.mode = mode
+        
+        # Обновление состояния кнопок
+        self.mode_roles_btn.setChecked(mode == 'roles')
+        self.mode_add_btn.setChecked(mode == 'add')
+        self.mode_delete_btn.setChecked(mode == 'delete')
+        
+        # Видимость панелей
+        self.roles_input_widget.setVisible(mode == 'roles')
+        self.add_panel.setVisible(mode == 'add')
+        self.delete_panel.setVisible(mode == 'delete')
+        
+        # Видимость элементов управления ролями
+        is_roles = (mode == 'roles')
+        self.info_group.setVisible(is_roles)
+        
+        if is_roles:
+            self.btn_roles.setVisible(self.loaded_user is not None and can_manage_user(self.current_user, self.loaded_user))
+            self.btn_depts.setVisible(self.loaded_user is not None and can_manage_user(self.current_user, self.loaded_user))
+            self.btn_perms.setVisible(self.loaded_user is not None and can_manage_user(self.current_user, self.loaded_user))
+            self.btn_save.setVisible(True)
+        else:
+            self.btn_roles.setVisible(False)
+            self.btn_depts.setVisible(False)
+            self.btn_perms.setVisible(False)
+            self.btn_save.setVisible(False)
+            self.input_username.clear()
+            self.loaded_user = None
+        
+        if mode == 'roles':
+            self.input_username.setFocus()
+    
+    def on_username_typed(self, text):
+        # ... (сохраняем логику из оригинального кода)
+        txt = text.strip()
+        if not txt:
+            if self._all_user_docs is None:
                 try:
-                    formatted_item = item_text.format(**values)
-                except KeyError:
-                    formatted_item = item_text
-                items_text.append(f"[*][JUSTIFY][SIZE=5][FONT=book antiqua]{formatted_item}[/FONT][/SIZE][/JUSTIFY]")
-
-            full_text = []
-
-            # Шапка
-            if tmpl["header_img"] and self.header_url:
-                full_text.append(tmpl["header_img"].format(**values))
-                full_text.append("[JUSTIFY][/JUSTIFY]")
-
-            # Заголовок
-            title = tmpl["title"].format(**values)
-            full_text.append(f"[CENTER][SIZE=5][FONT=book antiqua][B]{title}[/B][/FONT][/SIZE][/CENTER]")
-
-            # Тело
-            body = tmpl["body"].format(**values)
-            full_text.append(f"[JUSTIFY][SIZE=5][FONT=book antiqua][B]{body}[/B][/FONT][/SIZE][/JUSTIFY]")
-
-            # Список пунктов
-            if items_text:
-                full_text.append("[LIST=1]")
-                full_text.extend(items_text)
-                full_text.append("[/LIST]")
-
-            # Подвал
-            footer = tmpl["footer"].format(**values)
-            full_text.append(footer)
-
-            bbcode_result = "\n".join(full_text)
-            self.bbcode_text.setPlainText(bbcode_result)
-            
-            plain_result = self.strip_bbcode(bbcode_result)
-            self.plain_text.setPlainText(plain_result)
-            
-            self.info_label.setText("✅ Сгенерировано успешно")
-
-        except Exception as e:
-            self.info_label.setText(f"❌ Ошибка: {str(e)}")
-
-    def copy_to_clipboard(self):
-        text = self.bbcode_text.toPlainText()
-        if not text:
-            QMessageBox.information(self, "Информация", "Нет текста для копирования.")
+                    self._all_user_docs = list_users() or []
+                except Exception:
+                    self._all_user_docs = []
+            suggestions = []
+            for d in self._all_user_docs:
+                try:
+                    name = d.get('username') or d.get('login') or ''
+                    if not name:
+                        continue
+                    try:
+                        if not can_manage_user(self.current_user, d):
+                            continue
+                    except Exception:
+                        continue
+                    suggestions.append(name)
+                except Exception:
+                    continue
+            self.completer_model.setStringList(sorted(suggestions))
+            self.loaded_user = None
+            self.btn_roles.setVisible(False)
+            self.btn_depts.setVisible(False)
+            self.btn_perms.setVisible(False)
+            self.update_info_label()
             return
-        QApplication.clipboard().setText(text)
-        self.info_label.setText("📋 Скопировано в буфер обмена")
-        QMessageBox.information(self, "Успех", "Текст скопирован в буфер обмена.")
-
-    def clear_layout(self, layout):
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
+        
+        if self._all_user_docs is None:
+            try:
+                self._all_user_docs = list_users() or []
+            except Exception:
+                self._all_user_docs = []
+        
+        suggestions = []
+        ltxt = txt.lower()
+        for d in self._all_user_docs:
+            try:
+                name = d.get('username') or d.get('login') or ''
+                if not name:
+                    continue
+                if ltxt not in name.lower():
+                    continue
+                try:
+                    if not can_manage_user(self.current_user, d):
+                        continue
+                except Exception:
+                    continue
+                suggestions.append(name)
+                if len(suggestions) >= 200:
+                    break
+            except Exception:
+                continue
+        
+        self.completer_model.setStringList(sorted(suggestions))
+    
+    def on_username_selected(self, name):
+        self.input_username.setText(name)
+        doc = None
+        if self._all_user_docs is not None:
+            for d in self._all_user_docs:
+                if (d.get('username') or d.get('login')) == name:
+                    doc = d
+                    break
+        
+        if not can_manage_user(self.current_user, doc or name):
+            QMessageBox.warning(self, "Доступ запрещен", 
+                               "Вы не можете редактировать этого пользователя.",
+                               QMessageBox.StandardButton.Ok)
+            return
+        self.load_user(name)
+    
+    def load_user(self, username):
+        try:
+            u = get_user(username)
+        except Exception:
+            u = None
+        
+        self.loaded_user = u
+        
+        if u:
+            manageable = can_manage_user(self.current_user, u)
+            self.btn_roles.setVisible(manageable)
+            self.btn_depts.setVisible(manageable)
+            self.btn_perms.setVisible(manageable)
+            
+            if not manageable:
+                QMessageBox.information(self, "Ограничение", 
+                                      "Вы видите этого пользователя, но не можете изменять его роли/отделы.")
+            
+            db_roles = set(u.get('roles') or [])
+            valid_keys = set(self.label_to_key.values())
+            self.selected_roles = [r for r in db_roles if r in valid_keys]
+            self.selected_depts = list(u.get('departments') or [])
+            self.selected_perms = list(u.get('permissions') or [])
+            
+            self.update_info_label()
+        else:
+            self.btn_roles.setVisible(False)
+            self.btn_depts.setVisible(False)
+            self.btn_perms.setVisible(False)
+            self.info_group.setVisible(False)
+            self.selected_roles = []
+            self.selected_depts = []
+            self.selected_perms = []
+    
+    def open_roles_popup(self):
+        allowed = []
+        for lbl, key in self.label_to_key.items():
+            try:
+                if can_assign_role(self.current_user, key):
+                    allowed.append(lbl)
+            except Exception:
+                continue
+        
+        if not allowed:
+            QMessageBox.information(self, "Нет доступных ролей", 
+                                  "У вас нет прав назначать какие-либо роли.")
+            return
+        
+        pre = [lbl for lbl, key in self.label_to_key.items() 
+               if key in self.selected_roles and lbl in allowed]
+        
+        popup = ModernSelectionPopup(self, title="Выберите роли", items=allowed, preselected=pre)
+        
+        # Центрирование
+        center = self.mapToGlobal(self.rect().center())
+        popup.move(int(center.x() - popup.width()/2), int(center.y() - popup.height()/2))
+        
+        if popup.exec() == QDialog.DialogCode.Accepted:
+            selected = popup.selected()
+            self.selected_roles = [self.label_to_key.get(s) for s in selected if self.label_to_key.get(s)]
+            
+            # Обновление доступных отделов
+            allowed = set()
+            for lbl, key in self.label_to_key.items():
+                if key in self.selected_roles:
+                    allowed.update(self.role_to_depts.get(lbl, []))
+            if not allowed:
+                allowed = set(['УТ', 'ЭУ', 'УК'])
+            
+            self.selected_depts = [d for d in self.selected_depts if d in allowed]
+            self.update_info_label()
+    
+    def open_depts_popup(self):
+        allowed = set()
+        for lbl, key in self.label_to_key.items():
+            if key in self.selected_roles:
+                allowed.update(self.role_to_depts.get(lbl, []))
+        
+        if not allowed:
+            allowed = set(['УТ', 'ЭУ', 'УК'])
+        
+        # Проверка прав на назначение отделов
+        try:
+            assigner_res = resolve_user_permissions(self.current_user) if self.current_user else {}
+        except Exception:
+            assigner_res = {}
+        
+        assigner_roles = set(assigner_res.get('roles', []))
+        global_assign_roles = {'Admin', 'Governor', 'Minister'}
+        
+        if not (assigner_roles & global_assign_roles):
+            assigner_depts = set(assigner_res.get('departments', []))
+            if assigner_depts:
+                allowed = allowed & assigner_depts
             else:
-                if item.layout():
-                    self.clear_layout(item.layout())
+                allowed = set()
+        
+        if not allowed:
+            QMessageBox.information(self, "Нет доступных отделов", 
+                                  "У вас нет прав назначать отделы для этого пользователя.")
+            return
+        
+        popup = ModernSelectionPopup(self, title="Выберите отделы", 
+                                    items=list(allowed), preselected=self.selected_depts)
+        
+        center = self.mapToGlobal(self.rect().center())
+        popup.move(int(center.x() - popup.width()/2), int(center.y() - popup.height()/2))
+        
+        if popup.exec() == QDialog.DialogCode.Accepted:
+            self.selected_depts = popup.selected()
+            self.update_info_label()
+    
+    def open_perms_popup(self):
+        synth = {
+            'roles': self.selected_roles,
+            'departments': self.selected_depts,
+            'permissions': self.selected_perms or []
+        }
+        
+        try:
+            resolved = resolve_user_permissions(synth)
+            perms_set = set()
+            for d in self.selected_depts:
+                perms_set.update(DEPT_DEFAULT_PERMS.get(d, []))
+            perms_set.update([p for p in resolved.get('permissions', []) 
+                            if p not in ('ut.sync', 'ut.access')])
+            perms_list = sorted(perms_set)
+        except Exception:
+            perms_list = []
+        
+        popup = ModernSelectionPopup(self, title="Выберите разрешения", 
+                                    items=perms_list, preselected=self.selected_perms)
+        
+        center = self.mapToGlobal(self.rect().center())
+        popup.move(int(center.x() - popup.width()/2), int(center.y() - popup.height()/2))
+        
+        if popup.exec() == QDialog.DialogCode.Accepted:
+            self.selected_perms = [p for p in popup.selected() 
+                                 if p not in ('ut.sync', 'ut.access')]
+            self.update_info_label()
+    
+    def update_info_label(self):
+        username = self.input_username.text().strip() or '-'
+        
+        key_to_label = {v: k for k, v in self.label_to_key.items()}
+        role_labels = [key_to_label.get(k, k) for k in self.selected_roles]
+        
+        perms = self.selected_perms if self.selected_perms else (self.loaded_user.get('permissions') if self.loaded_user else [])
+        
+        info_text = f"""👤 Пользователь: {username}
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    w = OrderEditorWindow()
-    w.show()
-    sys.exit(app.exec())
+🎭 Роли: {', '.join(role_labels) if role_labels else '—'}
+
+🏢 Отделы: {', '.join(self.selected_depts) if self.selected_depts else '—'}
+
+🔑 Разрешения: {', '.join(perms) if perms else '—'}"""
+        
+        self.info_label.setText(info_text)
+        self.info_group.setVisible(True)
+    
+    def on_save(self):
+        username = self.input_username.text().strip()
+        if not username:
+            QMessageBox.warning(self, "Ошибка", "Введите логин пользователя.")
+            return
+        
+        if self.current_user:
+            for rk in self.selected_roles:
+                if not can_assign_role(self.current_user, rk):
+                    QMessageBox.warning(self, "Доступ запрещен", 
+                                       f"Вы не можете назначать роль {rk}.")
+                    return
+            
+            if self.selected_depts:
+                try:
+                    if not can_assign_departments(self.current_user, self.selected_depts):
+                        QMessageBox.warning(self, "Доступ запрещен", 
+                                          "Вы не можете назначать выбранные отделы.")
+                        return
+                except Exception:
+                    QMessageBox.warning(self, "Ошибка проверки", 
+                                      "Не удалось проверить права на назначение отделов.")
+                    return
+        
+        try:
+            save_user_roles(username, self.selected_roles, self.selected_depts, permissions=self.selected_perms)
+            
+            # Анимированное закрытие
+            self.animation = QPropertyAnimation(self, b"windowOpacity")
+            self.animation.setDuration(150)
+            self.animation.setStartValue(1)
+            self.animation.setEndValue(0)
+            self.animation.finished.connect(self.accept)
+            self.animation.start()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка при сохранении", str(e))
+    
+    def _on_create_user(self):
+        login = self.add_login.text().strip()
+        pwd = self.add_password.text()
+        
+        if not login or not pwd:
+            QMessageBox.warning(self, 'Ошибка', 'Укажите логин и пароль для нового пользователя.')
+            return
+        
+        try:
+            create_user(login, pwd)
+            QMessageBox.information(self, 'Готово', f'Пользователь {login} создан.')
+            
+            # Очистка полей
+            self.add_login.clear()
+            self.add_password.clear()
+            self._all_user_docs = None
+            
+            # Переключение в режим ролей
+            self.set_mode('roles')
+            
+        except Exception as e:
+            QMessageBox.critical(self, 'Ошибка', str(e))
+    
+    def _on_delete_user(self):
+        login = self.del_login.text().strip()
+        
+        if not login:
+            QMessageBox.warning(self, 'Ошибка', 'Укажите логин для удаления.')
+            return
+        
+        # Стилизованное подтверждение
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Подтверждение")
+        msg.setText(f"Вы действительно хотите удалить пользователя {login}?")
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+        
+        # Стилизация
+        msg.setStyleSheet("""
+            QMessageBox {
+                background-color: #2d2d2d;
+            }
+            QLabel {
+                color: white;
+                font-size: 15px; /* Увеличен шрифт */
+                padding: 25px; /* Увеличены отступы */
+            }
+            QPushButton {
+                background-color: #404040;
+                color: white;
+                border: none;
+                border-radius: 10px; /* Увеличен радиус */
+                padding: 10px 25px; /* Увеличены отступы */
+                font-weight: bold;
+                min-width: 90px; /* Увеличена ширина */
+            }
+            QPushButton:hover {
+                background-color: #505050;
+            }
+        """)
+        
+        if msg.exec() != QMessageBox.StandardButton.Yes:
+            return
+        
+        try:
+            if delete_user(login):
+                QMessageBox.information(self, 'Готово', f'Пользователь {login} удалён.')
+                self.del_login.clear()
+                self._all_user_docs = None
+                self.set_mode('roles')
+            else:
+                QMessageBox.information(self, 'Инфо', 'Пользователь не найден.')
+        except Exception as e:
+            QMessageBox.critical(self, 'Ошибка', str(e))
